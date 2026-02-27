@@ -238,3 +238,168 @@ class TestExternalScripts:
         </body></html>"""
         result = blazeclient.render(html)
         assert "survived" in result
+
+
+class TestClient:
+    """Client class with per-instance script cache."""
+
+    @pytest.fixture
+    def httpserver(self):
+        pytest.importorskip("pytest_httpserver")
+        from pytest_httpserver import HTTPServer
+        server = HTTPServer(host="127.0.0.1")
+        server.start()
+        yield server
+        server.clear()
+        if server.is_running():
+            server.stop()
+
+    def test_basic_render(self):
+        client = blazeclient.Client()
+        result = client.render("<html><body><p>hi</p></body></html>")
+        assert "<p>hi</p>" in result
+
+    def test_render_with_inline_script(self):
+        client = blazeclient.Client()
+        html = """<html><body>
+            <div id="out"></div>
+            <script>document.getElementById('out').textContent = 'ok';</script>
+        </body></html>"""
+        result = client.render(html)
+        assert "ok" in result
+
+    def test_render_str_input(self):
+        """Client.render accepts str (auto-encoded to UTF-8 by PyO3)."""
+        client = blazeclient.Client()
+        result = client.render("<html><body>OK</body></html>")
+        assert "OK" in result
+
+    def test_cache_populated_by_external_scripts(self, httpserver):
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        assert client.cache_size == 0
+        client.render(html)
+        assert client.cache_size == 1
+
+    def test_cache_hit_no_refetch(self, httpserver):
+        """Second render uses cache — server only expects one request."""
+        httpserver.expect_ordered_request("/lib.js").respond_with_data(
+            "document.getElementById('out').textContent = 'cached';",
+            content_type="application/javascript",
+        )
+        base = httpserver.url_for("")
+        html = f"""<html><body>
+            <p id="out">empty</p>
+            <script src="{base}/lib.js"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        result1 = client.render(html)
+        assert "cached" in result1
+
+        # Stop server — second render must use cache
+        httpserver.stop()
+        result2 = client.render(html)
+        assert "cached" in result2
+
+    def test_cache_false_bypasses_cache(self, httpserver):
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        client.render(html, cache=False)
+        assert client.cache_size == 0  # nothing written
+
+    def test_cache_write_false(self, httpserver):
+        """cache_write=False reads cache but doesn't write new entries."""
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        client.render(html, cache_write=False)
+        assert client.cache_size == 0  # read was enabled, but nothing to read; write disabled
+
+    def test_cache_read_false(self, httpserver):
+        """cache_read=False skips cache lookup but saves fetched results."""
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        client.render(html, cache_read=False)
+        assert client.cache_size == 1  # written even though read was disabled
+
+    def test_class_level_cache_toggle(self, httpserver):
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        client.cache = False
+        client.render(html)
+        assert client.cache_size == 0  # cache disabled at class level
+
+    def test_per_render_overrides_class(self, httpserver):
+        """Per-render cache=True overrides class-level cache=False."""
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client(cache=False)
+        assert client.cache is False
+        client.render(html, cache=True)
+        assert client.cache_size == 1  # per-render override took effect
+
+    def test_clear_cache(self, httpserver):
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        client = blazeclient.Client()
+        client.render(html)
+        assert client.cache_size == 1
+        client.clear_cache()
+        assert client.cache_size == 0
+
+    def test_separate_clients_separate_caches(self, httpserver):
+        httpserver.expect_request("/app.js").respond_with_data(
+            "var x = 1;", content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <script src="{httpserver.url_for('/app.js')}"></script>
+        </body></html>"""
+        c1 = blazeclient.Client()
+        c2 = blazeclient.Client()
+        c1.render(html)
+        assert c1.cache_size == 1
+        assert c2.cache_size == 0  # c2 has its own empty cache
+
+    def test_constructor_defaults(self):
+        client = blazeclient.Client()
+        assert client.cache is True
+        assert client.cache_read is True
+        assert client.cache_write is True
+
+    def test_constructor_kwargs(self):
+        client = blazeclient.Client(cache=False, cache_read=False, cache_write=False)
+        assert client.cache is False
+        assert client.cache_read is False
+        assert client.cache_write is False

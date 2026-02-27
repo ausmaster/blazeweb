@@ -50,12 +50,29 @@ struct ScriptInfo {
 /// execute in document order. Returns collected errors (non-fatal — each
 /// script/fetch error is captured but doesn't prevent subsequent scripts).
 pub fn execute_scripts(arena: &mut Arena, base_url: Option<&str>) -> Result<Vec<String>, EngineError> {
+    execute_scripts_inner(arena, base_url, None)
+}
+
+/// Execute scripts with an optional script cache for external fetches.
+pub fn execute_scripts_with_cache(
+    arena: &mut Arena,
+    base_url: Option<&str>,
+    cache_opts: Option<&crate::net::fetch::CacheOpts>,
+) -> Result<Vec<String>, EngineError> {
+    execute_scripts_inner(arena, base_url, cache_opts)
+}
+
+fn execute_scripts_inner(
+    arena: &mut Arena,
+    base_url: Option<&str>,
+    cache_opts: Option<&crate::net::fetch::CacheOpts>,
+) -> Result<Vec<String>, EngineError> {
     let mut scripts = extract_scripts(arena);
     if scripts.is_empty() {
         return Ok(vec![]); // Fast path: no V8 initialization needed
     }
 
-    // Fetch external scripts in parallel
+    // Resolve external script URLs
     let mut errors = Vec::new();
     let externals: Vec<(usize, reqwest::Url)> = scripts
         .iter()
@@ -74,7 +91,12 @@ pub fn execute_scripts(arena: &mut Arena, base_url: Option<&str>) -> Result<Vec<
         })
         .collect();
 
-    for (idx, result) in crate::net::fetch::fetch_scripts(externals) {
+    // Fetch external scripts (with or without cache)
+    let fetched = match cache_opts {
+        Some(opts) => crate::net::fetch::fetch_scripts_cached(externals, opts),
+        None => crate::net::fetch::fetch_scripts(externals),
+    };
+    for (idx, result) in fetched {
         match result {
             Ok(text) => scripts[idx].source = ScriptSource::Inline(text),
             Err(e) => {

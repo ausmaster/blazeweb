@@ -1,8 +1,9 @@
-"""Performance benchmark: blazeclient vs headless Chromium.
+"""Performance benchmark: blazeclient Client (with cache) vs headless Chromium.
 
-For each site we fetch the raw HTML once, then time both engines
-on the same input. blazeclient runs in-process for accurate timing;
-Chromium uses page.set_content() (parse + execute, no network).
+For each site we fetch the raw HTML once, then time both engines on the same
+input.  blazeclient uses a Client with script cache — a cold pass populates
+the cache, then a warm pass measures cached performance.  Chromium uses
+page.set_content() (parse + execute, no external script fetch).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -32,14 +33,19 @@ BENCH_SITES = [s for s in SITES if s not in V8_ICU_CRASHERS]
 class BenchResult:
     url: str
     html_bytes: int
-    bc_ms: float
+    bc_cold_ms: float
+    bc_warm_ms: float
     chrome_ms: float
     skipped: bool = False
     skip_reason: str = ""
 
     @property
-    def speedup(self) -> float:
-        return self.chrome_ms / self.bc_ms if self.bc_ms > 0 else 0
+    def speedup_warm(self) -> float:
+        return self.chrome_ms / self.bc_warm_ms if self.bc_warm_ms > 0 else 0
+
+    @property
+    def speedup_cold(self) -> float:
+        return self.chrome_ms / self.bc_cold_ms if self.bc_cold_ms > 0 else 0
 
     @property
     def site_name(self) -> str:
@@ -47,6 +53,9 @@ class BenchResult:
 
 
 _results: list[BenchResult] = []
+
+# Module-scoped Client — cache accumulates across all sites
+_client: blazeclient.Client | None = None
 
 
 @pytest.fixture(scope="module")
@@ -57,6 +66,16 @@ def bench_browser():
     yield browser
     browser.close()
     p.stop()
+
+
+@pytest.fixture(scope="module")
+def bc_client():
+    """Module-scoped blazeclient Client with warm cache."""
+    global _client
+    _client = blazeclient.Client()
+    # Warm up V8 platform
+    _client.render("<html><body></body></html>")
+    return _client
 
 
 @pytest.fixture(scope="module")
@@ -74,7 +93,7 @@ def html_cache(bench_browser):
     for url in BENCH_SITES:
         raw_html = None
 
-        def handle_response(response):
+        def handle_response(response, _rh=[None]):
             nonlocal raw_html
             if raw_html is None and response.request.resource_type == "document":
                 try:
@@ -100,31 +119,33 @@ def _site_id(url: str) -> str:
 
 
 @pytest.mark.parametrize("url", BENCH_SITES, ids=[_site_id(u) for u in BENCH_SITES])
-def test_bench_site(url, bench_browser, html_cache):
-    """Benchmark blazeclient vs Chromium on one site."""
+def test_bench_site(url, bench_browser, html_cache, bc_client):
+    """Benchmark blazeclient Client (cold + warm) vs Chromium on one site."""
     if url not in html_cache:
-        r = BenchResult(url=url, html_bytes=0, bc_ms=0, chrome_ms=0, skipped=True, skip_reason="fetch failed")
+        r = BenchResult(url=url, html_bytes=0, bc_cold_ms=0, bc_warm_ms=0,
+                        chrome_ms=0, skipped=True, skip_reason="fetch failed")
         _results.append(r)
         pytest.skip(f"No HTML cached for {url}")
 
     html = html_cache[url]
 
-    # ── blazeclient timing ───────────────────────────────────────────────
-    # Warm up (first call inits V8 platform)
-    try:
-        blazeclient.render("<html><body></body></html>")
-    except Exception:
-        pass
-
+    # ── blazeclient COLD: first render, fetches + caches external scripts ──
     t0 = time.perf_counter()
     try:
-        blazeclient.render(html, base_url=url)
+        bc_client.render(html, base_url=url)
     except Exception:
         pass
-    bc_ms = (time.perf_counter() - t0) * 1000
+    bc_cold_ms = (time.perf_counter() - t0) * 1000
 
-    # ── Chromium timing ──────────────────────────────────────────────────
-    # page.set_content = parse HTML + execute scripts (no network fetch)
+    # ── blazeclient WARM: second render, cache hits ────────────────────────
+    t0 = time.perf_counter()
+    try:
+        bc_client.render(html, base_url=url)
+    except Exception:
+        pass
+    bc_warm_ms = (time.perf_counter() - t0) * 1000
+
+    # ── Chromium timing ────────────────────────────────────────────────────
     ctx = bench_browser.new_context()
     page = ctx.new_page()
 
@@ -138,55 +159,57 @@ def test_bench_site(url, bench_browser, html_cache):
     page.close()
     ctx.close()
 
-    r = BenchResult(url=url, html_bytes=len(html), bc_ms=bc_ms, chrome_ms=chrome_ms)
+    r = BenchResult(url=url, html_bytes=len(html), bc_cold_ms=bc_cold_ms,
+                    bc_warm_ms=bc_warm_ms, chrome_ms=chrome_ms)
     _results.append(r)
 
 
 def test_benchmark_summary():
     """Print the benchmark comparison table."""
-    valid = [r for r in _results if not r.skipped and r.bc_ms > 0 and r.chrome_ms > 0]
+    valid = [r for r in _results if not r.skipped and r.bc_warm_ms > 0 and r.chrome_ms > 0]
     if not valid:
         pytest.skip("No benchmark results")
 
-    faster = [r for r in valid if r.bc_ms < r.chrome_ms]
-    slower = [r for r in valid if r.bc_ms >= r.chrome_ms]
-    avg_bc = sum(r.bc_ms for r in valid) / len(valid)
-    avg_ch = sum(r.chrome_ms for r in valid) / len(valid)
-    total_bc = sum(r.bc_ms for r in valid)
+    warm_faster = [r for r in valid if r.bc_warm_ms < r.chrome_ms]
+    cold_faster = [r for r in valid if r.bc_cold_ms < r.chrome_ms]
+    total_cold = sum(r.bc_cold_ms for r in valid)
+    total_warm = sum(r.bc_warm_ms for r in valid)
     total_ch = sum(r.chrome_ms for r in valid)
-    median_speedup = sorted(r.speedup for r in valid)[len(valid) // 2]
+    median_warm = sorted(r.speedup_warm for r in valid)[len(valid) // 2]
 
     hdr = (
-        f"\n{'='*100}\n"
-        f"  BLAZECLIENT vs CHROMIUM — Performance Benchmark ({len(valid)} sites)\n"
-        f"{'='*100}\n"
+        f"\n{'='*115}\n"
+        f"  BLAZECLIENT CLIENT vs CHROMIUM — Performance Benchmark ({len(valid)} sites)\n"
+        f"{'='*115}\n"
         f"\n"
-        f"  blazeclient faster: {len(faster)}/{len(valid)} sites\n"
-        f"  Chromium faster:    {len(slower)}/{len(valid)} sites\n"
+        f"  blazeclient (warm cache) faster: {len(warm_faster)}/{len(valid)} sites\n"
+        f"  blazeclient (cold, no cache) faster: {len(cold_faster)}/{len(valid)} sites\n"
         f"\n"
-        f"  Total time:    blazeclient {total_bc/1000:.2f}s  vs  Chromium {total_ch/1000:.2f}s  "
-        f"({total_ch/total_bc:.1f}x)\n"
-        f"  Average/site:  blazeclient {avg_bc:.0f}ms  vs  Chromium {avg_ch:.0f}ms\n"
-        f"  Median speedup: {median_speedup:.1f}x\n"
+        f"  Total time:  cold {total_cold/1000:.2f}s  |  warm {total_warm/1000:.2f}s  |  "
+        f"Chromium {total_ch/1000:.2f}s\n"
+        f"  Warm vs Chromium: {total_ch/total_warm:.1f}x overall  |  "
+        f"median {median_warm:.1f}x per-site\n"
+        f"\n"
+        f"  Cache entries: {_client.cache_size if _client else 0}\n"
     )
     print(hdr, file=sys.stderr)
 
     print(
-        f"  {'Site':<40} {'HTML':>8} {'blaze':>9} {'chrome':>9} {'speedup':>9}",
+        f"  {'Site':<40} {'HTML':>6} {'cold':>9} {'warm':>9} {'chrome':>9} {'warm/chr':>9}",
         file=sys.stderr,
     )
-    print(f"  {'-'*40} {'-'*8} {'-'*9} {'-'*9} {'-'*9}", file=sys.stderr)
+    print(f"  {'-'*40} {'-'*6} {'-'*9} {'-'*9} {'-'*9} {'-'*9}", file=sys.stderr)
 
-    for r in sorted(valid, key=lambda r: r.speedup, reverse=True):
+    for r in sorted(valid, key=lambda r: r.speedup_warm, reverse=True):
         name = r.site_name
         if len(name) > 39:
             name = name[:36] + "..."
         kb = f"{r.html_bytes / 1024:.0f}KB"
-        marker = "<<<" if r.speedup >= 5 else ("<<" if r.speedup >= 2 else ("<" if r.speedup > 1 else ""))
+        marker = "<<<" if r.speedup_warm >= 5 else ("<<" if r.speedup_warm >= 2 else ("<" if r.speedup_warm > 1 else ""))
         print(
-            f"  {name:<40} {kb:>8} {r.bc_ms:>8.0f}ms {r.chrome_ms:>8.0f}ms "
-            f"{r.speedup:>7.1f}x {marker}",
+            f"  {name:<40} {kb:>6} {r.bc_cold_ms:>7.0f}ms {r.bc_warm_ms:>7.0f}ms "
+            f"{r.chrome_ms:>7.0f}ms {r.speedup_warm:>7.1f}x {marker}",
             file=sys.stderr,
         )
 
-    print(f"\n{'='*100}", file=sys.stderr)
+    print(f"\n{'='*115}", file=sys.stderr)

@@ -4,7 +4,8 @@
 /// pooling, and parallel fetching. Scripts are fetched concurrently but
 /// executed in document order by the caller.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use reqwest::{Client, Url};
@@ -12,6 +13,16 @@ use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
 use crate::error::EngineError;
+
+/// Thread-safe script cache: resolved URL string → fetched script text.
+pub type ScriptCache = Mutex<HashMap<String, String>>;
+
+/// Controls cache behavior for a single fetch operation.
+pub struct CacheOpts<'a> {
+    pub cache: &'a ScriptCache,
+    pub read: bool,
+    pub write: bool,
+}
 
 static RT: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -78,6 +89,60 @@ async fn fetch_all(urls: Vec<(usize, Url)>) -> Vec<(usize, Result<String, Engine
             }
         }
     }
+    results
+}
+
+/// Fetch scripts with cache support. Checks cache first (if read enabled),
+/// fetches missing scripts in parallel, and stores results (if write enabled).
+pub fn fetch_scripts_cached(
+    urls: Vec<(usize, Url)>,
+    opts: &CacheOpts,
+) -> Vec<(usize, Result<String, EngineError>)> {
+    if urls.is_empty() {
+        return vec![];
+    }
+
+    let mut results = Vec::new();
+    let mut to_fetch = Vec::new();
+
+    // Check cache for hits (if read enabled)
+    if opts.read {
+        let cache_map = opts.cache.lock().unwrap();
+        for (idx, url) in &urls {
+            if let Some(text) = cache_map.get(url.as_str()) {
+                results.push((*idx, Ok(text.clone())));
+            } else {
+                to_fetch.push((*idx, url.clone()));
+            }
+        }
+    } else {
+        to_fetch = urls.iter().map(|(i, u)| (*i, u.clone())).collect();
+    }
+
+    // Fetch missing scripts in parallel
+    if !to_fetch.is_empty() {
+        // Build index → URL mapping for cache writes
+        let idx_to_url: HashMap<usize, String> = to_fetch
+            .iter()
+            .map(|(idx, url)| (*idx, url.as_str().to_owned()))
+            .collect();
+
+        let fetched = fetch_scripts(to_fetch);
+
+        if opts.write {
+            let mut cache_map = opts.cache.lock().unwrap();
+            for (idx, result) in &fetched {
+                if let Ok(text) = result {
+                    if let Some(url_str) = idx_to_url.get(idx) {
+                        cache_map.insert(url_str.clone(), text.clone());
+                    }
+                }
+            }
+        }
+
+        results.extend(fetched);
+    }
+
     results
 }
 
