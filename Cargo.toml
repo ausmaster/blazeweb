@@ -1,0 +1,26 @@
+[package]
+name = "blazeclient"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "_blazeclient"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module"] }
+v8 = "135"
+html5ever = "0.38"
+markup5ever = "0.38"
+slotmap = "1.0"
+reqwest = { version = "0.12", features = ["http2"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+selectors = "0.26"
+thiserror = "2"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
