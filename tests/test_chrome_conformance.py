@@ -1,6 +1,6 @@
-"""Conformance tests: blazeclient vs headless Chromium.
+"""Conformance tests: blazeweb vs headless Chromium.
 
-Each test renders the same HTML through both blazeclient.render() and
+Each test renders the same HTML through both blazeweb.render() and
 Playwright (headless Chromium), then compares the resulting DOM trees.
 """
 
@@ -11,7 +11,7 @@ import pytest
 lxml_html = pytest.importorskip("lxml.html")
 from lxml.etree import tostring  # noqa: E402
 
-import blazeclient  # noqa: E402
+import blazeweb  # noqa: E402
 
 pytestmark = pytest.mark.conformance
 
@@ -20,8 +20,8 @@ pytestmark = pytest.mark.conformance
 
 
 def render_both(html: str, page) -> tuple[str, str]:
-    """Render HTML through both blazeclient and Chromium."""
-    bc_output = blazeclient.render(html)
+    """Render HTML through both blazeweb and Chromium."""
+    bc_output = blazeweb.render(html)
     page.set_content(html, wait_until="load")
     chrome_output = page.content()
     return bc_output, chrome_output
@@ -106,7 +106,7 @@ def assert_dom_equal(bc_html: str, chrome_html: str):
         ch_ser = tostring(chrome_dom, encoding="unicode", method="html")
         raise AssertionError(
             f"DOM mismatch: {msg}\n\n"
-            f"--- blazeclient (normalized) ---\n{bc_ser}\n\n"
+            f"--- blazeweb (normalized) ---\n{bc_ser}\n\n"
             f"--- chromium (normalized) ---\n{ch_ser}"
         )
 
@@ -125,7 +125,7 @@ def assert_text_equal(bc_html: str, chrome_html: str, selector: str, expected: s
     bc_text = get_element_text(bc_html, selector)
     ch_text = get_element_text(chrome_html, selector)
     assert bc_text == expected, (
-        f"blazeclient #{selector} text: {bc_text!r}, expected: {expected!r}"
+        f"blazeweb #{selector} text: {bc_text!r}, expected: {expected!r}"
     )
     assert ch_text == expected, (
         f"chromium #{selector} text: {ch_text!r}, expected: {expected!r}"
@@ -567,7 +567,6 @@ class TestNodeAPI:
 
 class TestStubbedAPIs:
 
-    @pytest.mark.xfail(reason="querySelector not yet implemented")
     def test_query_selector(self, page):
         html = """<!DOCTYPE html><html><head></head><body>
             <p class="target">found</p>
@@ -580,7 +579,6 @@ class TestStubbedAPIs:
         bc, ch = render_both(html, page)
         assert_text_equal(bc, ch, "#result", "found")
 
-    @pytest.mark.xfail(reason="querySelectorAll not yet implemented")
     def test_query_selector_all(self, page):
         html = """<!DOCTYPE html><html><head></head><body>
             <p class="item">a</p><p class="item">b</p>
@@ -592,3 +590,464 @@ class TestStubbedAPIs:
         </body></html>"""
         bc, ch = render_both(html, page)
         assert_text_equal(bc, ch, "#result", "2")
+
+    def test_query_selector_complex(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div class="container"><span data-x="1">A</span><span data-x="2">B</span></div>
+            <div id="result"></div>
+            <script>
+                var el = document.querySelector('.container span[data-x="2"]');
+                document.getElementById('result').textContent = el ? el.textContent : 'null';
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "B")
+
+    def test_element_matches(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" class="foo bar"></div>
+            <div id="result"></div>
+            <script>
+                var el = document.getElementById('target');
+                var parts = [
+                    el.matches('.foo'),
+                    el.matches('.baz'),
+                    el.matches('div.bar')
+                ];
+                document.getElementById('result').textContent = parts.join(',');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "true,false,true")
+
+    def test_element_closest(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div class="outer"><div class="inner"><span id="target">text</span></div></div>
+            <div id="result"></div>
+            <script>
+                var el = document.getElementById('target');
+                var closest = el.closest('.outer');
+                document.getElementById('result').textContent = closest ? closest.className : 'null';
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "outer")
+
+
+class TestTimerAPIs:
+
+    def test_set_timeout_fires(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">before</div>
+            <script>
+                setTimeout(function() {
+                    document.getElementById('result').textContent = 'after';
+                }, 0);
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "after")
+
+    def test_clear_timeout_cancels(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">unchanged</div>
+            <script>
+                var id = setTimeout(function() {
+                    document.getElementById('result').textContent = 'changed';
+                }, 0);
+                clearTimeout(id);
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "unchanged")
+
+    def test_set_interval_fires(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">0</div>
+            <script>
+                var count = 0;
+                var id = setInterval(function() {
+                    count++;
+                    document.getElementById('result').textContent = count.toString();
+                }, 10);
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        # blazeweb fires intervals once (SSR semantics), Chrome fires repeatedly
+        bc_text = get_element_text(bc, "#result")
+        assert bc_text == "1", f"blazeweb interval should fire once, got: {bc_text}"
+
+
+class TestEventSystem:
+
+    def test_dom_content_loaded(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    document.getElementById('result').textContent = 'loaded';
+                });
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "loaded")
+
+    def test_window_dom_content_loaded(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                window.addEventListener('DOMContentLoaded', function() {
+                    document.getElementById('result').textContent = 'window-loaded';
+                });
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "window-loaded")
+
+
+class TestClassList:
+
+    def test_classlist_add(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target"></div>
+            <script>
+                var el = document.getElementById('target');
+                el.classList.add('foo', 'bar');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_classlist_remove(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" class="foo bar baz"></div>
+            <script>
+                var el = document.getElementById('target');
+                el.classList.remove('bar');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_classlist_toggle(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" class="foo bar"></div>
+            <div id="result"></div>
+            <script>
+                var el = document.getElementById('target');
+                var r1 = el.classList.toggle('bar');
+                var r2 = el.classList.toggle('baz');
+                document.getElementById('result').textContent = r1 + ',' + r2 + ',' + el.className;
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "false,true,foo baz")
+
+    def test_classlist_contains(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" class="foo bar"></div>
+            <div id="result"></div>
+            <script>
+                var el = document.getElementById('target');
+                var parts = [
+                    el.classList.contains('foo'),
+                    el.classList.contains('baz')
+                ];
+                document.getElementById('result').textContent = parts.join(',');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "true,false")
+
+
+class TestStyleProperty:
+
+    def test_style_set_display(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target"></div>
+            <script>
+                document.getElementById('target').style.display = 'none';
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_style_read(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" style="color: red; font-size: 14px"></div>
+            <div id="result"></div>
+            <script>
+                var s = document.getElementById('target').style;
+                document.getElementById('result').textContent = s.color + '|' + s.fontSize;
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "red|14px")
+
+    def test_style_get_property_value(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target" style="background-color: blue"></div>
+            <div id="result"></div>
+            <script>
+                var s = document.getElementById('target').style;
+                document.getElementById('result').textContent = s.getPropertyValue('background-color');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_text_equal(bc, ch, "#result", "blue")
+
+
+class TestWindowAPIs:
+
+    def test_navigator_user_agent(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result"></div>
+            <script>
+                document.getElementById('result').textContent =
+                    typeof navigator.userAgent === 'string' ? 'ok' : 'fail';
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        # Both should have a string userAgent
+        bc_text = get_element_text(bc, "#result")
+        ch_text = get_element_text(ch, "#result")
+        assert bc_text == "ok"
+        assert ch_text == "ok"
+
+    def test_location_href(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result"></div>
+            <script>
+                document.getElementById('result').textContent =
+                    typeof location.href === 'string' ? 'ok' : 'fail';
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        bc_text = get_element_text(bc, "#result")
+        ch_text = get_element_text(ch, "#result")
+        assert bc_text == "ok"
+        assert ch_text == "ok"
+
+    def test_document_ready_state(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result"></div>
+            <script>
+                document.getElementById('result').textContent = document.readyState;
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        # Both should say "complete" (blazeweb always returns "complete", Chrome may say "loading" during set_content)
+        bc_text = get_element_text(bc, "#result")
+        assert bc_text == "complete"
+
+
+class TestMiscDOM:
+
+    def test_replace_child(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="parent"><span id="old">old</span></div>
+            <script>
+                var parent = document.getElementById('parent');
+                var old = document.getElementById('old');
+                var newEl = document.createElement('em');
+                newEl.textContent = 'new';
+                parent.replaceChild(newEl, old);
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_insert_adjacent_html(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target">middle</div>
+            <script>
+                var el = document.getElementById('target');
+                el.insertAdjacentHTML('afterbegin', '<b>start</b>');
+                el.insertAdjacentHTML('beforeend', '<i>end</i>');
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_append_and_prepend(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target"><span>middle</span></div>
+            <script>
+                var el = document.getElementById('target');
+                var first = document.createElement('b');
+                first.textContent = 'first';
+                var last = document.createElement('i');
+                last.textContent = 'last';
+                el.prepend(first);
+                el.append(last);
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        assert_dom_equal(bc, ch)
+
+    def test_get_bounding_client_rect(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="target">box</div>
+            <div id="result"></div>
+            <script>
+                var rect = document.getElementById('target').getBoundingClientRect();
+                document.getElementById('result').textContent =
+                    typeof rect.width + ',' + typeof rect.height;
+            </script>
+        </body></html>"""
+        bc, ch = render_both(html, page)
+        bc_text = get_element_text(bc, "#result")
+        ch_text = get_element_text(ch, "#result")
+        assert bc_text == "number,number"
+        assert ch_text == "number,number"
+
+
+# ── H: Fetch API Conformance ────────────────────────────────────────────────
+
+
+class TestFetchConformance:
+    """Fetch API: blazeweb vs Chrome, using a local HTTP server."""
+
+    @pytest.fixture(autouse=True)
+    def _server(self):
+        from pytest_httpserver import HTTPServer
+
+        self.server = HTTPServer(host="127.0.0.1")
+        self.server.start()
+        yield
+        self.server.clear()
+        if self.server.is_running():
+            self.server.stop()
+
+    @property
+    def base(self):
+        return self.server.url_for("").rstrip("/")
+
+    def render_fetch(self, html, page):
+        """Render through blazeweb (with base_url) and Playwright."""
+        bc_output = blazeweb.render(html, base_url=self.base)
+        # For Chrome, navigate to the HTTP server with inline HTML via data URI
+        # won't work for fetch — Chrome needs the page served from the same origin.
+        # Serve the HTML from the server instead.
+        self.server.expect_request("/test-page").respond_with_data(
+            html, content_type="text/html"
+        )
+        page.goto(f"{self.base}/test-page", wait_until="networkidle")
+        chrome_output = page.content()
+        return bc_output, chrome_output
+
+    def test_fetch_basic_text(self, page):
+        self.server.expect_request("/api/text").respond_with_data(
+            "hello-world", content_type="text/plain"
+        )
+        html = f"""<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                fetch('{self.base}/api/text')
+                    .then(function(r) {{ return r.text(); }})
+                    .then(function(t) {{
+                        document.getElementById('result').textContent = t;
+                    }});
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "hello-world"
+        assert get_element_text(ch, "#result") == "hello-world"
+
+    def test_fetch_json_parse(self, page):
+        self.server.expect_request("/api/json").respond_with_json(
+            {"x": 42, "y": "test"}
+        )
+        html = f"""<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                fetch('{self.base}/api/json')
+                    .then(function(r) {{ return r.json(); }})
+                    .then(function(d) {{
+                        document.getElementById('result').textContent = d.x + '-' + d.y;
+                    }});
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "42-test"
+        assert get_element_text(ch, "#result") == "42-test"
+
+    def test_fetch_status_properties(self, page):
+        self.server.expect_request("/api/ok").respond_with_data("ok", status=200)
+        html = f"""<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                fetch('{self.base}/api/ok')
+                    .then(function(r) {{
+                        document.getElementById('result').textContent =
+                            r.status + ',' + r.ok;
+                    }});
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "200,true"
+        assert get_element_text(ch, "#result") == "200,true"
+
+    def test_fetch_404(self, page):
+        self.server.expect_request("/api/nope").respond_with_data(
+            "nope", status=404
+        )
+        html = f"""<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                fetch('{self.base}/api/nope')
+                    .then(function(r) {{
+                        document.getElementById('result').textContent =
+                            r.status + ',' + r.ok;
+                    }});
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "404,false"
+        assert get_element_text(ch, "#result") == "404,false"
+
+    def test_fetch_promise_all(self, page):
+        self.server.expect_request("/api/a").respond_with_data("A")
+        self.server.expect_request("/api/b").respond_with_data("B")
+        html = f"""<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                Promise.all([
+                    fetch('{self.base}/api/a').then(function(r) {{ return r.text(); }}),
+                    fetch('{self.base}/api/b').then(function(r) {{ return r.text(); }})
+                ]).then(function(results) {{
+                    document.getElementById('result').textContent = results.join(',');
+                }});
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "A,B"
+        assert get_element_text(ch, "#result") == "A,B"
+
+    def test_fetch_error_catch(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result">pending</div>
+            <script>
+                fetch('http://127.0.0.1:1/nope')
+                    .then(function(r) {
+                        document.getElementById('result').textContent = 'no-error';
+                    })
+                    .catch(function(err) {
+                        document.getElementById('result').textContent = 'caught';
+                    });
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "caught"
+        assert get_element_text(ch, "#result") == "caught"
+
+    def test_fetch_typeof(self, page):
+        html = """<!DOCTYPE html><html><head></head><body>
+            <div id="result"></div>
+            <script>
+                document.getElementById('result').textContent = typeof fetch;
+            </script>
+        </body></html>"""
+        bc, ch = self.render_fetch(html, page)
+        assert get_element_text(bc, "#result") == "function"
+        assert get_element_text(ch, "#result") == "function"

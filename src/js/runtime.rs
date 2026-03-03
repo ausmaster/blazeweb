@@ -23,11 +23,28 @@ static V8_INIT: Once = Once::new();
 static ISOLATE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Ensure V8 platform is initialized exactly once per process.
+///
+/// ICU data is loaded via set_common_data_74() BEFORE V8::initialize(),
+/// matching the pattern used by Deno (deno_core/runtime/setup.rs).
+/// Uses deno_core_icudata v0.74.0 (ICU 74 data, matching v8 crate 135.1.1).
+/// The order is critical:
+/// 1. set_common_data_74() — provide ICU locale data
+/// 2. V8::initialize_platform() — create V8 platform
+/// 3. V8::initialize() — start V8 engine
 fn ensure_v8_initialized() {
     V8_INIT.call_once(|| {
+        // Load ICU data FIRST — before any V8 initialization.
+        log::info!("loading ICU data ({} bytes)...", deno_core_icudata::ICU_DATA.len());
+        match v8::icu::set_common_data_74(deno_core_icudata::ICU_DATA) {
+            Ok(()) => log::info!("ICU data loaded successfully"),
+            Err(code) => log::error!("ICU data load failed with error code {}", code),
+        }
+
+        log::info!("initializing V8 platform");
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
+        log::info!("V8 initialized");
     });
 }
 
@@ -42,45 +59,106 @@ enum ScriptSource {
 struct ScriptInfo {
     source: ScriptSource,
     name: String,
+    node_id: Option<NodeId>, // <script> element node for document.currentScript
 }
 
 /// Execute all scripts (inline + external) found in the parsed Arena.
 ///
-/// External scripts are fetched in parallel via async HTTP, then all scripts
-/// execute in document order. Returns collected errors (non-fatal — each
-/// script/fetch error is captured but doesn't prevent subsequent scripts).
-pub fn execute_scripts(arena: &mut Arena, base_url: Option<&str>) -> Result<Vec<String>, EngineError> {
-    execute_scripts_inner(arena, base_url, None)
-}
-
-/// Execute scripts with an optional script cache for external fetches.
-pub fn execute_scripts_with_cache(
+/// External scripts are fetched in parallel via the unified fetch pipeline,
+/// then all scripts execute in document order. Returns collected errors
+/// (non-fatal — each script/fetch error is captured but doesn't prevent
+/// subsequent scripts).
+///
+/// The `context` provides shared cache/cookies for script fetching and
+/// is stored in the V8 isolate slot so JS fetch() and XHR can use it too.
+pub fn execute_scripts(
     arena: &mut Arena,
     base_url: Option<&str>,
-    cache_opts: Option<&crate::net::fetch::CacheOpts>,
+    context: &crate::net::fetch::FetchContext,
 ) -> Result<Vec<String>, EngineError> {
-    execute_scripts_inner(arena, base_url, cache_opts)
+    execute_scripts_inner(arena, base_url, context)
+}
+
+/// Near-heap-limit callback: allow expansion up to 4x the initial heap limit.
+/// Each expansion adds 256 MB. Once 4x is reached, V8 will OOM.
+extern "C" fn near_heap_limit_callback(
+    _data: *mut std::ffi::c_void,
+    current_heap_limit: usize,
+    initial_heap_limit: usize,
+) -> usize {
+    let max_limit = initial_heap_limit.saturating_mul(4);
+    if current_heap_limit < max_limit {
+        let expansion = 256 * 1024 * 1024; // 256 MB per step
+        let new_limit = std::cmp::min(current_heap_limit + expansion, max_limit);
+        log::warn!(
+            "V8 near heap limit: current={}MB, expanding to {}MB (max={}MB)",
+            current_heap_limit / (1024 * 1024),
+            new_limit / (1024 * 1024),
+            max_limit / (1024 * 1024),
+        );
+        new_limit
+    } else {
+        log::error!(
+            "V8 heap at max {}MB — OOM imminent",
+            current_heap_limit / (1024 * 1024),
+        );
+        current_heap_limit // No more expansions — V8 will OOM
+    }
+}
+
+/// OOM error handler: logs diagnostic info before V8 aborts the process.
+/// Cannot prevent the crash — V8 calls std::abort() after this returns.
+unsafe extern "C" fn oom_error_handler(
+    location: *const i8,
+    details: &v8::OomDetails,
+) {
+    let loc = if location.is_null() {
+        "unknown"
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(location) }
+            .to_str()
+            .unwrap_or("unknown")
+    };
+    log::error!(
+        "V8 fatal OOM at {}: is_heap_oom={}",
+        loc,
+        details.is_heap_oom,
+    );
+    eprintln!(
+        "blazeweb: V8 fatal OOM at {}: is_heap_oom={}",
+        loc, details.is_heap_oom,
+    );
 }
 
 fn execute_scripts_inner(
     arena: &mut Arena,
     base_url: Option<&str>,
-    cache_opts: Option<&crate::net::fetch::CacheOpts>,
+    fetch_context: &crate::net::fetch::FetchContext,
 ) -> Result<Vec<String>, EngineError> {
+    let t0 = std::time::Instant::now();
+    let url_label = base_url.unwrap_or("<inline>");
     let mut scripts = extract_scripts(arena);
     if scripts.is_empty() {
+        log::debug!("[{}] no scripts, skipping V8", url_label);
         return Ok(vec![]); // Fast path: no V8 initialization needed
     }
 
-    // Resolve external script URLs
+    let inline_count = scripts.iter().filter(|s| matches!(s.source, ScriptSource::Inline(_))).count();
+    let external_count = scripts.len() - inline_count;
+    log::info!(
+        "[{}] found {} scripts ({} inline, {} external)",
+        url_label, scripts.len(), inline_count, external_count,
+    );
+
+    // Resolve external script URLs and build Request objects
     let mut errors = Vec::new();
-    let externals: Vec<(usize, reqwest::Url)> = scripts
+    let external_requests: Vec<(usize, crate::net::request::Request)> = scripts
         .iter()
         .enumerate()
         .filter_map(|(i, s)| match &s.source {
             ScriptSource::External(src) => {
                 match crate::net::fetch::resolve_url(src, base_url) {
-                    Ok(url) => Some((i, url)),
+                    Ok(url) => Some((i, crate::net::request::Request::script(url))),
                     Err(e) => {
                         errors.push(e.to_string());
                         None
@@ -91,20 +169,34 @@ fn execute_scripts_inner(
         })
         .collect();
 
-    // Fetch external scripts (with or without cache)
-    let fetched = match cache_opts {
-        Some(opts) => crate::net::fetch::fetch_scripts_cached(externals, opts),
-        None => crate::net::fetch::fetch_scripts(externals),
-    };
-    for (idx, result) in fetched {
-        match result {
-            Ok(text) => scripts[idx].source = ScriptSource::Inline(text),
-            Err(e) => {
-                errors.push(e.to_string());
-                // Mark as empty so it's skipped during execution
-                scripts[idx].source = ScriptSource::Inline(String::new());
-            }
+    // Fetch external scripts in parallel via the unified pipeline (uses shared cache/cookies)
+    let fetch_start = std::time::Instant::now();
+    let fetched = crate::net::fetch::fetch_parallel(external_requests, fetch_context);
+    let mut fetch_ok = 0usize;
+    let mut fetch_err = 0usize;
+    for (idx, response) in fetched {
+        if response.is_network_error() || !response.ok() {
+            let reason = if response.is_network_error() {
+                response.status_text.clone()
+            } else {
+                format!("HTTP {}", response.status)
+            };
+            log::warn!("[{}] fetch failed {}: {}", url_label, scripts[idx].name, reason);
+            fetch_err += 1;
+            errors.push(format!("network error fetching {}: {}", scripts[idx].name, reason));
+            scripts[idx].source = ScriptSource::Inline(String::new());
+        } else {
+            let text = response.text();
+            log::debug!("[{}] fetched {} ({} bytes)", url_label, scripts[idx].name, text.len());
+            fetch_ok += 1;
+            scripts[idx].source = ScriptSource::Inline(text);
         }
+    }
+    if external_count > 0 {
+        log::info!(
+            "[{}] fetched {}/{} external scripts in {:?} ({} failed)",
+            url_label, fetch_ok, external_count, fetch_start.elapsed(), fetch_err,
+        );
     }
 
     ensure_v8_initialized();
@@ -112,10 +204,21 @@ fn execute_scripts_inner(
     // Serialize isolate creation — V8 135's JSDispatchTable has a race
     // condition in TryAllocateEntryFromFreelist during concurrent Isolate::Init.
     // The lock is released immediately after creation; script execution is parallel.
+    log::info!("[{}] acquiring isolate lock...", url_label);
     let isolate = &mut {
         let _guard = ISOLATE_LOCK.lock().unwrap();
-        v8::Isolate::new(v8::CreateParams::default())
+        log::info!("[{}] creating V8 isolate (1GB heap)...", url_label);
+        // 1 GB heap limit. Chrome uses ~80 MB for typical sites; 1 GB gives
+        // ample headroom for heavy pages without unbounded growth.
+        let params = v8::CreateParams::default()
+            .heap_limits(0, 1024 * 1024 * 1024);
+        let mut iso = v8::Isolate::new(params);
+        log::info!("[{}] V8 isolate created, configuring...", url_label);
+        iso.add_near_heap_limit_callback(near_heap_limit_callback, std::ptr::null_mut());
+        iso.set_oom_error_handler(oom_error_handler);
+        iso
     };
+    log::info!("[{}] V8 isolate ready in {:?}", url_label, t0.elapsed());
 
     // Store arena pointer and wrapper cache in isolate slots
     let arena_ptr = arena as *mut Arena;
@@ -123,15 +226,31 @@ fn execute_scripts_inner(
     isolate.set_slot(WrapperCache {
         map: HashMap::new(),
     });
+    isolate.set_slot(crate::js::templates::ChildNodesCache {
+        map: HashMap::new(),
+    });
+    isolate.set_slot(super::timers::TimerQueue::new());
+    isolate.set_slot(super::events::EventListenerMap::new());
+    isolate.set_slot(super::bindings::storage::WebStorage::new());
+    isolate.set_slot(super::bindings::location::BaseUrl(base_url.map(|s| s.to_string())));
+    isolate.set_slot(super::bindings::document::DocumentCookie(String::new()));
+    isolate.set_slot(super::bindings::document::CurrentScriptId(None));
+    isolate.set_slot(super::fetch::FetchQueue::new());
+    isolate.set_slot(super::mutation_observer::MutationObserverState::new());
+    isolate.set_slot(fetch_context.clone());
 
+    log::info!("[{}] creating handle scope...", url_label);
     let handle_scope = &mut v8::HandleScope::new(isolate);
 
     // Create DOM templates (pre-context, in HandleScope<()>)
+    log::info!("[{}] creating DOM templates...", url_label);
     let dom_templates = super::templates::create_dom_templates(handle_scope);
     handle_scope.set_slot(dom_templates);
 
     // Create global template and context
+    log::info!("[{}] creating global template...", url_label);
     let global_template = super::templates::create_global_template(handle_scope);
+    log::info!("[{}] creating V8 context...", url_label);
     let context = v8::Context::new(
         handle_scope,
         v8::ContextOptions {
@@ -139,22 +258,92 @@ fn execute_scripts_inner(
             ..Default::default()
         },
     );
+    log::info!("[{}] creating context scope...", url_label);
     let scope = &mut v8::ContextScope::new(handle_scope, context);
 
     // Install document, window, console on globalThis
+    log::info!("[{}] installing globals...", url_label);
     super::bindings::window::install_globals(scope);
+    log::info!("[{}] setup complete, executing scripts...", url_label);
 
     // Execute each script in document order
+    let exec_start = std::time::Instant::now();
+    let mut scripts_executed = 0usize;
+    let mut scripts_errored = 0usize;
     for (i, script) in scripts.iter().enumerate() {
         let source = match &script.source {
             ScriptSource::Inline(s) if !s.is_empty() => s.as_str(),
             _ => continue, // skip unfetched/empty scripts
         };
-        if let Err(e) = execute_one_script(scope, source, &script.name, i) {
-            errors.push(e.to_string());
+        // Set document.currentScript before execution
+        if let Some(cs) = scope.get_slot_mut::<super::bindings::document::CurrentScriptId>() {
+            cs.0 = script.node_id;
+        }
+        let script_start = std::time::Instant::now();
+        log::debug!(
+            "[{}] exec script {}/{} \"{}\" ({} bytes)",
+            url_label, i + 1, scripts.len(), script.name,
+            source.len(),
+        );
+        match execute_one_script(scope, source, &script.name, i) {
+            Ok(()) => {
+                scripts_executed += 1;
+                log::debug!(
+                    "[{}] script \"{}\" ok in {:?}",
+                    url_label, script.name, script_start.elapsed(),
+                );
+            }
+            Err(e) => {
+                scripts_errored += 1;
+                log::warn!(
+                    "[{}] script \"{}\" error in {:?}: {}",
+                    url_label, script.name, script_start.elapsed(), e,
+                );
+                errors.push(e.to_string());
+            }
+        }
+        // Reset document.currentScript after execution
+        if let Some(cs) = scope.get_slot_mut::<super::bindings::document::CurrentScriptId>() {
+            cs.0 = None;
         }
     }
+    log::info!(
+        "[{}] executed {}/{} scripts in {:?} ({} errors)",
+        url_label, scripts_executed, scripts.len(), exec_start.elapsed(), scripts_errored,
+    );
 
+    // Post-script phase: fire DOMContentLoaded, then interleaved fetch+timer drain
+    let dcl_errors = super::events::fire_dom_content_loaded(scope);
+    scope.perform_microtask_checkpoint();
+    errors.extend(dcl_errors);
+
+    // Interleaved drain: fetch results may schedule timers, timer callbacks may fetch
+    for drain_round in 0..10 {
+        let fetch_errors = super::fetch::drain(scope, 1);
+        errors.extend(fetch_errors);
+
+        let timer_errors = super::timers::drain(scope, 1);
+        errors.extend(timer_errors);
+
+        scope.perform_microtask_checkpoint();
+
+        let no_fetches = scope
+            .get_slot::<super::fetch::FetchQueue>()
+            .map_or(true, |q| q.pending.is_empty());
+        let no_timers = scope
+            .get_slot::<super::timers::TimerQueue>()
+            .map_or(true, |q| q.is_empty());
+        if no_fetches && no_timers {
+            log::trace!("[{}] drain complete after {} rounds", url_label, drain_round + 1);
+            break;
+        }
+        log::trace!("[{}] drain round {}: fetches={}, timers={}", url_label, drain_round + 1, !no_fetches, !no_timers);
+    }
+
+    log::info!(
+        "[{}] total execution: {:?}, {} errors",
+        url_label, t0.elapsed(), errors.len(),
+    );
     Ok(errors)
 }
 
@@ -189,6 +378,7 @@ fn extract_scripts_recursive(
                 scripts.push(ScriptInfo {
                     source: ScriptSource::External(src.to_owned()),
                     name: format!("{}", src),
+                    node_id: Some(node),
                 });
             } else {
                 let text = collect_script_text(arena, node);
@@ -196,6 +386,7 @@ fn extract_scripts_recursive(
                     scripts.push(ScriptInfo {
                         source: ScriptSource::Inline(text),
                         name: format!("inline-script-{}", *inline_idx),
+                        node_id: Some(node),
                     });
                     *inline_idx += 1;
                 }
@@ -279,170 +470,7 @@ fn extract_js_error(try_catch: &mut v8::TryCatch<v8::HandleScope>) -> EngineErro
     EngineError::JsExecution { message, stack }
 }
 
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_v8_initializes() {
-        ensure_v8_initialized();
-        ensure_v8_initialized(); // Second call should be fine
-    }
-
-    #[test]
-    fn test_extract_scripts_empty() {
-        let arena = crate::dom::treesink::parse("<html><body><p>No scripts</p></body></html>");
-        let scripts = extract_scripts(&arena);
-        assert!(scripts.is_empty());
-    }
-
-    #[test]
-    fn test_extract_scripts_inline() {
-        let arena = crate::dom::treesink::parse(
-            "<html><body><script>var x = 1;</script></body></html>",
-        );
-        let scripts = extract_scripts(&arena);
-        assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0].source, ScriptSource::Inline(s) if s == "var x = 1;"));
-        assert_eq!(scripts[0].name, "inline-script-0");
-    }
-
-    #[test]
-    fn test_extract_scripts_multiple() {
-        let arena = crate::dom::treesink::parse(
-            "<html><body>\
-             <script>var a = 1;</script>\
-             <script>var b = 2;</script>\
-             <script>var c = 3;</script>\
-             </body></html>",
-        );
-        let scripts = extract_scripts(&arena);
-        assert_eq!(scripts.len(), 3);
-        assert!(matches!(&scripts[0].source, ScriptSource::Inline(s) if s == "var a = 1;"));
-        assert!(matches!(&scripts[1].source, ScriptSource::Inline(s) if s == "var b = 2;"));
-        assert!(matches!(&scripts[2].source, ScriptSource::Inline(s) if s == "var c = 3;"));
-    }
-
-    #[test]
-    fn test_extract_scripts_skips_non_js_type() {
-        let arena = crate::dom::treesink::parse(
-            r#"<html><body><script type="application/json">{"key": "value"}</script></body></html>"#,
-        );
-        let scripts = extract_scripts(&arena);
-        assert!(scripts.is_empty());
-    }
-
-    #[test]
-    fn test_extract_scripts_skips_type_module() {
-        let arena = crate::dom::treesink::parse(
-            r#"<html><body><script type="module">import x from './x';</script></body></html>"#,
-        );
-        let scripts = extract_scripts(&arena);
-        assert!(scripts.is_empty());
-    }
-
-    #[test]
-    fn test_extract_scripts_external() {
-        let arena = crate::dom::treesink::parse(
-            r#"<html><body><script src="app.js"></script></body></html>"#,
-        );
-        let scripts = extract_scripts(&arena);
-        assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0].source, ScriptSource::External(s) if s == "app.js"));
-    }
-
-    #[test]
-    fn test_extract_scripts_mixed_order() {
-        let arena = crate::dom::treesink::parse(
-            r#"<html><body>
-            <script>var a = 1;</script>
-            <script src="lib.js"></script>
-            <script>var b = 2;</script>
-            </body></html>"#,
-        );
-        let scripts = extract_scripts(&arena);
-        assert_eq!(scripts.len(), 3);
-        assert!(matches!(&scripts[0].source, ScriptSource::Inline(s) if s == "var a = 1;"));
-        assert!(matches!(&scripts[1].source, ScriptSource::External(s) if s == "lib.js"));
-        assert!(matches!(&scripts[2].source, ScriptSource::Inline(s) if s == "var b = 2;"));
-    }
-
-    #[test]
-    fn test_execute_noop_script() {
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body><script>var x = 1;</script></body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_execute_no_scripts_fast_path() {
-        let mut arena =
-            crate::dom::treesink::parse("<html><body><p>Hello</p></body></html>");
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_execute_syntax_error() {
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body><script>function {</script></body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("SyntaxError"));
-    }
-
-    #[test]
-    fn test_execute_runtime_error() {
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body><script>undefined.foo</script></body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("TypeError"));
-    }
-
-    #[test]
-    fn test_multiple_scripts_sequential() {
-        // First script sets a global, second reads it
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body>\
-             <script>var shared = 42;</script>\
-             <script>if (shared !== 42) throw new Error('not shared');</script>\
-             </body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        assert!(errors.is_empty(), "errors: {:?}", errors);
-    }
-
-    #[test]
-    fn test_e2e_create_and_set_textcontent() {
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body><div id=\"container\"></div><script>\
-             var el = document.createElement('span');\
-             el.textContent = 'dynamic';\
-             document.getElementById('container').appendChild(el);\
-             </script></body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        let html = crate::dom::serialize(&arena);
-        assert!(errors.is_empty(), "errors: {:?}", errors);
-        assert!(html.contains("<span>dynamic</span>"), "got: {}", html);
-    }
-
-    #[test]
-    fn test_e2e_innerhtml_set() {
-        let mut arena = crate::dom::treesink::parse(
-            "<html><body><div id=\"target\">old</div><script>\
-             document.getElementById('target').innerHTML = '<b>bold</b>';\
-             </script></body></html>",
-        );
-        let errors = execute_scripts(&mut arena, None).unwrap();
-        let html = crate::dom::serialize(&arena);
-        assert!(errors.is_empty(), "errors: {:?}", errors);
-        assert!(html.contains("<b>bold</b>"), "got: {}", html);
-        assert!(!html.contains(">old<"), "got: {}", html);
-    }
-}
+#[path = "runtime_tests.rs"]
+mod tests;

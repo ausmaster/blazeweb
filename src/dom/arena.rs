@@ -2,6 +2,30 @@ use slotmap::{new_key_type, SlotMap};
 
 use super::node::{ElementData, NodeData};
 
+// ─── Node flags (ported from Servo's NodeFlags) ──────────────────────────────
+
+/// Bitflags for node state, enabling O(1) checks for common properties.
+/// Ported from Servo's `NodeFlags` in `components/script/dom/node.rs`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeFlags(u16);
+
+impl NodeFlags {
+    /// The node is connected to the document tree (reachable from the root Document).
+    pub const IS_CONNECTED: u16 = 1 << 0;
+
+    pub fn is_connected(self) -> bool {
+        self.0 & Self::IS_CONNECTED != 0
+    }
+
+    pub fn set_connected(&mut self, connected: bool) {
+        if connected {
+            self.0 |= Self::IS_CONNECTED;
+        } else {
+            self.0 &= !Self::IS_CONNECTED;
+        }
+    }
+}
+
 new_key_type! {
     /// Generational key identifying a node in the arena.
     pub struct NodeId;
@@ -19,6 +43,7 @@ pub struct Node {
     pub last_child: Option<NodeId>,
     pub next_sibling: Option<NodeId>,
     pub prev_sibling: Option<NodeId>,
+    pub flags: NodeFlags,
 }
 
 impl Node {
@@ -30,6 +55,7 @@ impl Node {
             last_child: None,
             next_sibling: None,
             prev_sibling: None,
+            flags: NodeFlags::default(),
         }
     }
 }
@@ -44,7 +70,9 @@ impl Arena {
     /// Create a new arena with a root Document node.
     pub fn new() -> Self {
         let mut nodes = SlotMap::with_key();
-        let document = nodes.insert(Node::new(NodeData::Document));
+        let mut doc_node = Node::new(NodeData::Document);
+        doc_node.flags.set_connected(true); // Document is always connected
+        let document = nodes.insert(doc_node);
         Self { nodes, document }
     }
 
@@ -70,13 +98,22 @@ impl Arena {
             self.nodes[parent].first_child = Some(child);
             self.nodes[parent].last_child = Some(child);
         }
+
+        // Propagate connectivity
+        let parent_connected = self.nodes[parent].flags.is_connected();
+        if parent_connected {
+            self.set_connected_recursive(child, true);
+        }
     }
 
-    /// Insert `new_child` before `reference` (which must be a child of some parent).
+    /// Insert `new_child` before `reference`.
+    /// If `reference` has no parent, this is a no-op (per DOM spec,
+    /// ChildNode methods on parentless nodes are no-ops).
     pub fn insert_before(&mut self, reference: NodeId, new_child: NodeId) {
-        let parent = self.nodes[reference]
-            .parent
-            .expect("insert_before: reference has no parent");
+        let parent = match self.nodes[reference].parent {
+            Some(p) => p,
+            None => return,
+        };
         self.detach(new_child);
 
         self.nodes[new_child].parent = Some(parent);
@@ -89,6 +126,12 @@ impl Arena {
             self.nodes[parent].first_child = Some(new_child);
         }
         self.nodes[reference].prev_sibling = Some(new_child);
+
+        // Propagate connectivity
+        let parent_connected = self.nodes[parent].flags.is_connected();
+        if parent_connected {
+            self.set_connected_recursive(new_child, true);
+        }
     }
 
     /// Remove `child` from its parent, preserving the child's subtree.
@@ -118,6 +161,11 @@ impl Arena {
         self.nodes[child].parent = None;
         self.nodes[child].prev_sibling = None;
         self.nodes[child].next_sibling = None;
+
+        // Detached nodes are no longer connected
+        if self.nodes[child].flags.is_connected() {
+            self.set_connected_recursive(child, false);
+        }
     }
 
     /// Move all children of `from` to be children of `to`, appended in order.
@@ -128,6 +176,16 @@ impl Arena {
             self.detach(c);
             self.append_child(to, c);
             child = next;
+        }
+    }
+
+    /// Recursively set IS_CONNECTED flag on a node and all its descendants.
+    pub fn set_connected_recursive(&mut self, node: NodeId, connected: bool) {
+        self.nodes[node].flags.set_connected(connected);
+        let mut child = self.nodes[node].first_child;
+        while let Some(c) = child {
+            self.set_connected_recursive(c, connected);
+            child = self.nodes[c].next_sibling;
         }
     }
 
@@ -305,6 +363,257 @@ impl Arena {
         }
         None
     }
+
+    // -- Validation (WHATWG DOM §4.4) ─────────────────────────────────────
+
+    /// Check if `ancestor` is an inclusive ancestor of `node`.
+    /// (i.e., ancestor == node, or ancestor is an ancestor of node.)
+    pub fn is_inclusive_ancestor_of(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if id == ancestor {
+                return true;
+            }
+            current = self.nodes[id].parent;
+        }
+        false
+    }
+
+    /// Count element children of a node.
+    fn count_element_children(&self, parent: NodeId) -> usize {
+        self.children(parent)
+            .filter(|&c| matches!(&self.nodes[c].data, NodeData::Element(_)))
+            .count()
+    }
+
+    /// Check if a node has a Doctype child.
+    fn has_doctype_child(&self, parent: NodeId) -> bool {
+        self.children(parent)
+            .any(|c| matches!(&self.nodes[c].data, NodeData::Doctype { .. }))
+    }
+
+    /// Check if any child is a Doctype that is NOT the given `exclude` node.
+    fn has_other_doctype_child(&self, parent: NodeId, exclude: NodeId) -> bool {
+        self.children(parent)
+            .any(|c| c != exclude && matches!(&self.nodes[c].data, NodeData::Doctype { .. }))
+    }
+
+    /// Check if any element child exists that is NOT the given `exclude` node.
+    fn has_other_element_child(&self, parent: NodeId, exclude: NodeId) -> bool {
+        self.children(parent)
+            .any(|c| c != exclude && matches!(&self.nodes[c].data, NodeData::Element(_)))
+    }
+
+    /// Check if a doctype exists among the inclusive following siblings of `node`.
+    fn doctype_following_or_is(&self, node: NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if matches!(&self.nodes[id].data, NodeData::Doctype { .. }) {
+                return true;
+            }
+            current = self.nodes[id].next_sibling;
+        }
+        false
+    }
+
+    /// Check if an element exists before `node` among its parent's children.
+    fn element_preceding(&self, parent: NodeId, node: NodeId) -> bool {
+        for child in self.children(parent) {
+            if child == node {
+                return false;
+            }
+            if matches!(&self.nodes[child].data, NodeData::Element(_)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// WHATWG DOM §4.4 ensure pre-insertion validity.
+    /// Ported from Servo's node.rs ensure_pre_insertion_validity.
+    ///
+    /// Returns Ok(()) if the insertion is valid, or Err(DomValidationError).
+    pub fn ensure_pre_insertion_validity(
+        &self,
+        node: NodeId,
+        parent: NodeId,
+        child: Option<NodeId>,
+    ) -> Result<(), DomValidationError> {
+        // Step 1: Parent must be Document, DocumentFragment, or Element.
+        match &self.nodes[parent].data {
+            NodeData::Document | NodeData::DocumentFragment | NodeData::Element(_) => {}
+            _ => return Err(DomValidationError::HierarchyRequest),
+        }
+
+        // Step 2: node must not be an inclusive ancestor of parent.
+        if self.is_inclusive_ancestor_of(node, parent) {
+            return Err(DomValidationError::HierarchyRequest);
+        }
+
+        // Step 3: If child is non-null, it must be a child of parent.
+        if let Some(child_id) = child {
+            if self.nodes[child_id].parent != Some(parent) {
+                return Err(DomValidationError::NotFound);
+            }
+        }
+
+        // Step 4+5: node type restrictions.
+        match &self.nodes[node].data {
+            NodeData::Text(_) => {
+                // Text cannot be child of Document
+                if matches!(&self.nodes[parent].data, NodeData::Document) {
+                    return Err(DomValidationError::HierarchyRequest);
+                }
+            }
+            NodeData::Doctype { .. } => {
+                // Doctype can only be child of Document
+                if !matches!(&self.nodes[parent].data, NodeData::Document) {
+                    return Err(DomValidationError::HierarchyRequest);
+                }
+            }
+            NodeData::Element(_) | NodeData::Comment(_) | NodeData::DocumentFragment => {
+                // These are always OK (subject to Step 6 Document constraints below)
+            }
+            NodeData::Document => {
+                // Cannot insert a Document node
+                return Err(DomValidationError::HierarchyRequest);
+            }
+        }
+
+        // Step 6: If parent is a Document, additional constraints.
+        if matches!(&self.nodes[parent].data, NodeData::Document) {
+            match &self.nodes[node].data {
+                NodeData::Element(_) => {
+                    // Document can have at most one Element child.
+                    if self.count_element_children(parent) > 0 {
+                        return Err(DomValidationError::HierarchyRequest);
+                    }
+                    // If child is non-null and a doctype follows child, reject.
+                    if let Some(child_id) = child {
+                        if self.doctype_following_or_is(child_id) {
+                            return Err(DomValidationError::HierarchyRequest);
+                        }
+                    }
+                }
+                NodeData::Doctype { .. } => {
+                    // Document can have at most one Doctype child.
+                    if self.has_doctype_child(parent) {
+                        return Err(DomValidationError::HierarchyRequest);
+                    }
+                    // If child is non-null, no element may precede child.
+                    if let Some(child_id) = child {
+                        if self.element_preceding(parent, child_id) {
+                            return Err(DomValidationError::HierarchyRequest);
+                        }
+                    } else {
+                        // child is null (appending) — no element child may exist.
+                        if self.count_element_children(parent) > 0 {
+                            return Err(DomValidationError::HierarchyRequest);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validation for replaceChild — similar to pre-insertion but accounts
+    /// for the node being replaced.
+    pub fn ensure_replace_validity(
+        &self,
+        node: NodeId,
+        parent: NodeId,
+        child: NodeId,
+    ) -> Result<(), DomValidationError> {
+        // Step 1: Parent must be Document, DocumentFragment, or Element.
+        match &self.nodes[parent].data {
+            NodeData::Document | NodeData::DocumentFragment | NodeData::Element(_) => {}
+            _ => return Err(DomValidationError::HierarchyRequest),
+        }
+
+        // Step 2: node must not be an inclusive ancestor of parent.
+        if self.is_inclusive_ancestor_of(node, parent) {
+            return Err(DomValidationError::HierarchyRequest);
+        }
+
+        // Step 3: child must be a child of parent.
+        if self.nodes[child].parent != Some(parent) {
+            return Err(DomValidationError::NotFound);
+        }
+
+        // Step 4+5: node type restrictions (same as pre-insert).
+        match &self.nodes[node].data {
+            NodeData::Text(_) => {
+                if matches!(&self.nodes[parent].data, NodeData::Document) {
+                    return Err(DomValidationError::HierarchyRequest);
+                }
+            }
+            NodeData::Doctype { .. } => {
+                if !matches!(&self.nodes[parent].data, NodeData::Document) {
+                    return Err(DomValidationError::HierarchyRequest);
+                }
+            }
+            NodeData::Element(_) | NodeData::Comment(_) | NodeData::DocumentFragment => {}
+            NodeData::Document => {
+                return Err(DomValidationError::HierarchyRequest);
+            }
+        }
+
+        // Step 6: If parent is a Document, additional constraints.
+        if matches!(&self.nodes[parent].data, NodeData::Document) {
+            match &self.nodes[node].data {
+                NodeData::Element(_) => {
+                    // No OTHER element child may exist (the one being replaced doesn't count).
+                    if self.has_other_element_child(parent, child) {
+                        return Err(DomValidationError::HierarchyRequest);
+                    }
+                    // No doctype may follow child.
+                    if let Some(next) = self.nodes[child].next_sibling {
+                        if self.doctype_following_or_is(next) {
+                            return Err(DomValidationError::HierarchyRequest);
+                        }
+                    }
+                }
+                NodeData::Doctype { .. } => {
+                    // No OTHER doctype child may exist.
+                    if self.has_other_doctype_child(parent, child) {
+                        return Err(DomValidationError::HierarchyRequest);
+                    }
+                    // No element may precede the child being replaced.
+                    if self.element_preceding(parent, child) {
+                        return Err(DomValidationError::HierarchyRequest);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// DOM validation errors, ported from Servo's DOMException.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomValidationError {
+    /// The operation would result in an invalid DOM hierarchy.
+    HierarchyRequest,
+    /// The referenced child node was not found.
+    NotFound,
+}
+
+impl std::fmt::Display for DomValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DomValidationError::HierarchyRequest => {
+                write!(f, "HierarchyRequestError: The operation would yield an incorrect node tree.")
+            }
+            DomValidationError::NotFound => {
+                write!(f, "NotFoundError: The object can not be found here.")
+            }
+        }
+    }
 }
 
 impl Default for Arena {
@@ -329,592 +638,7 @@ impl<'a> Iterator for ChildrenIter<'a> {
     }
 }
 
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dom::node::NodeData;
-    use markup5ever::{ns, Attribute, QualName};
-
-    fn make_element(arena: &mut Arena, tag: &str) -> NodeId {
-        let name = QualName::new(None, ns!(html), tag.into());
-        let data = NodeData::Element(ElementData::new(name, vec![]));
-        arena.new_node(data)
-    }
-
-    fn make_element_with_attrs(arena: &mut Arena, tag: &str, attrs: &[(&str, &str)]) -> NodeId {
-        let name = QualName::new(None, ns!(html), tag.into());
-        let attrs: Vec<Attribute> = attrs
-            .iter()
-            .map(|(k, v)| Attribute {
-                name: QualName::new(None, ns!(), (*k).into()),
-                value: (*v).into(),
-            })
-            .collect();
-        let data = NodeData::Element(ElementData::new(name, attrs));
-        arena.new_node(data)
-    }
-
-    fn make_text(arena: &mut Arena, text: &str) -> NodeId {
-        arena.new_node(NodeData::Text(text.to_string()))
-    }
-
-    /// Collect all children of a node into a Vec.
-    fn child_vec(arena: &Arena, parent: NodeId) -> Vec<NodeId> {
-        arena.children(parent).collect()
-    }
-
-    // ─── Arena basics ───────────────────────────────────────
-
-    #[test]
-    fn new_arena_has_document_root() {
-        let arena = Arena::new();
-        assert!(matches!(arena.nodes[arena.document].data, NodeData::Document));
-        assert_eq!(arena.nodes[arena.document].parent, None);
-        assert_eq!(arena.nodes[arena.document].first_child, None);
-    }
-
-    #[test]
-    fn new_node_is_detached() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        assert_eq!(arena.nodes[div].parent, None);
-        assert_eq!(arena.nodes[div].first_child, None);
-        assert_eq!(arena.nodes[div].next_sibling, None);
-        assert_eq!(arena.nodes[div].prev_sibling, None);
-    }
-
-    // ─── append_child ───────────────────────────────────────
-
-    #[test]
-    fn append_single_child() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        arena.append_child(arena.document, div);
-
-        assert_eq!(arena.nodes[div].parent, Some(arena.document));
-        assert_eq!(arena.nodes[arena.document].first_child, Some(div));
-        assert_eq!(arena.nodes[arena.document].last_child, Some(div));
-        assert_eq!(arena.nodes[div].prev_sibling, None);
-        assert_eq!(arena.nodes[div].next_sibling, None);
-    }
-
-    #[test]
-    fn append_multiple_children_preserves_order() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-        let c = make_element(&mut arena, "c");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.append_child(parent, c);
-
-        assert_eq!(child_vec(&arena, parent), vec![a, b, c]);
-        // first/last pointers
-        assert_eq!(arena.nodes[parent].first_child, Some(a));
-        assert_eq!(arena.nodes[parent].last_child, Some(c));
-        // sibling links
-        assert_eq!(arena.nodes[a].next_sibling, Some(b));
-        assert_eq!(arena.nodes[b].next_sibling, Some(c));
-        assert_eq!(arena.nodes[c].next_sibling, None);
-        assert_eq!(arena.nodes[c].prev_sibling, Some(b));
-        assert_eq!(arena.nodes[b].prev_sibling, Some(a));
-        assert_eq!(arena.nodes[a].prev_sibling, None);
-    }
-
-    #[test]
-    fn append_child_moves_from_old_parent() {
-        let mut arena = Arena::new();
-        let p1 = make_element(&mut arena, "div");
-        let p2 = make_element(&mut arena, "span");
-        let child = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, p1);
-        arena.append_child(arena.document, p2);
-        arena.append_child(p1, child);
-        assert_eq!(child_vec(&arena, p1), vec![child]);
-
-        // Move child from p1 to p2
-        arena.append_child(p2, child);
-        assert_eq!(child_vec(&arena, p1), vec![]);
-        assert_eq!(child_vec(&arena, p2), vec![child]);
-        assert_eq!(arena.nodes[child].parent, Some(p2));
-    }
-
-    #[test]
-    fn append_child_text_nodes() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        let t1 = make_text(&mut arena, "hello ");
-        let t2 = make_text(&mut arena, "world");
-
-        arena.append_child(arena.document, div);
-        arena.append_child(div, t1);
-        arena.append_child(div, t2);
-
-        assert_eq!(child_vec(&arena, div), vec![t1, t2]);
-        assert!(matches!(&arena.nodes[t1].data, NodeData::Text(s) if s == "hello "));
-        assert!(matches!(&arena.nodes[t2].data, NodeData::Text(s) if s == "world"));
-    }
-
-    // ─── insert_before ──────────────────────────────────────
-
-    #[test]
-    fn insert_before_first_child() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, b);
-        arena.insert_before(b, a);
-
-        assert_eq!(child_vec(&arena, parent), vec![a, b]);
-        assert_eq!(arena.nodes[parent].first_child, Some(a));
-        assert_eq!(arena.nodes[parent].last_child, Some(b));
-        assert_eq!(arena.nodes[a].prev_sibling, None);
-        assert_eq!(arena.nodes[a].next_sibling, Some(b));
-    }
-
-    #[test]
-    fn insert_before_middle() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-        let c = make_element(&mut arena, "c");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, c);
-        arena.insert_before(c, b);
-
-        assert_eq!(child_vec(&arena, parent), vec![a, b, c]);
-        assert_eq!(arena.nodes[a].next_sibling, Some(b));
-        assert_eq!(arena.nodes[b].prev_sibling, Some(a));
-        assert_eq!(arena.nodes[b].next_sibling, Some(c));
-        assert_eq!(arena.nodes[c].prev_sibling, Some(b));
-    }
-
-    #[test]
-    fn insert_before_moves_from_old_parent() {
-        let mut arena = Arena::new();
-        let p1 = make_element(&mut arena, "div");
-        let p2 = make_element(&mut arena, "span");
-        let child = make_element(&mut arena, "a");
-        let ref_node = make_element(&mut arena, "b");
-
-        arena.append_child(arena.document, p1);
-        arena.append_child(arena.document, p2);
-        arena.append_child(p1, child);
-        arena.append_child(p2, ref_node);
-
-        arena.insert_before(ref_node, child);
-
-        assert_eq!(child_vec(&arena, p1), vec![]);
-        assert_eq!(child_vec(&arena, p2), vec![child, ref_node]);
-    }
-
-    // ─── detach ─────────────────────────────────────────────
-
-    #[test]
-    fn detach_only_child() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let child = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, child);
-        arena.detach(child);
-
-        assert_eq!(child_vec(&arena, parent), vec![]);
-        assert_eq!(arena.nodes[parent].first_child, None);
-        assert_eq!(arena.nodes[parent].last_child, None);
-        assert_eq!(arena.nodes[child].parent, None);
-    }
-
-    #[test]
-    fn detach_first_child() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.detach(a);
-
-        assert_eq!(child_vec(&arena, parent), vec![b]);
-        assert_eq!(arena.nodes[parent].first_child, Some(b));
-        assert_eq!(arena.nodes[b].prev_sibling, None);
-    }
-
-    #[test]
-    fn detach_last_child() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.detach(b);
-
-        assert_eq!(child_vec(&arena, parent), vec![a]);
-        assert_eq!(arena.nodes[parent].last_child, Some(a));
-        assert_eq!(arena.nodes[a].next_sibling, None);
-    }
-
-    #[test]
-    fn detach_middle_child() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-        let c = make_element(&mut arena, "c");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.append_child(parent, c);
-        arena.detach(b);
-
-        assert_eq!(child_vec(&arena, parent), vec![a, c]);
-        assert_eq!(arena.nodes[a].next_sibling, Some(c));
-        assert_eq!(arena.nodes[c].prev_sibling, Some(a));
-        assert_eq!(arena.nodes[b].parent, None);
-        assert_eq!(arena.nodes[b].prev_sibling, None);
-        assert_eq!(arena.nodes[b].next_sibling, None);
-    }
-
-    #[test]
-    fn detach_already_detached_is_noop() {
-        let mut arena = Arena::new();
-        let orphan = make_element(&mut arena, "div");
-        // Should not panic
-        arena.detach(orphan);
-        assert_eq!(arena.nodes[orphan].parent, None);
-    }
-
-    #[test]
-    fn detach_preserves_subtree() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let child = make_element(&mut arena, "span");
-        let grandchild = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, child);
-        arena.append_child(child, grandchild);
-        arena.detach(child);
-
-        // child's subtree is intact
-        assert_eq!(child_vec(&arena, child), vec![grandchild]);
-        assert_eq!(arena.nodes[grandchild].parent, Some(child));
-    }
-
-    // ─── reparent_children ──────────────────────────────────
-
-    #[test]
-    fn reparent_children_moves_all() {
-        let mut arena = Arena::new();
-        let src = make_element(&mut arena, "div");
-        let dst = make_element(&mut arena, "span");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-
-        arena.append_child(arena.document, src);
-        arena.append_child(arena.document, dst);
-        arena.append_child(src, a);
-        arena.append_child(src, b);
-
-        arena.reparent_children(src, dst);
-
-        assert_eq!(child_vec(&arena, src), vec![]);
-        assert_eq!(child_vec(&arena, dst), vec![a, b]);
-        assert_eq!(arena.nodes[a].parent, Some(dst));
-        assert_eq!(arena.nodes[b].parent, Some(dst));
-    }
-
-    #[test]
-    fn reparent_children_appends_to_existing() {
-        let mut arena = Arena::new();
-        let src = make_element(&mut arena, "div");
-        let dst = make_element(&mut arena, "span");
-        let existing = make_element(&mut arena, "p");
-        let moved = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, src);
-        arena.append_child(arena.document, dst);
-        arena.append_child(dst, existing);
-        arena.append_child(src, moved);
-
-        arena.reparent_children(src, dst);
-
-        assert_eq!(child_vec(&arena, dst), vec![existing, moved]);
-    }
-
-    #[test]
-    fn reparent_empty_is_noop() {
-        let mut arena = Arena::new();
-        let src = make_element(&mut arena, "div");
-        let dst = make_element(&mut arena, "span");
-
-        arena.append_child(arena.document, src);
-        arena.append_child(arena.document, dst);
-
-        arena.reparent_children(src, dst);
-        assert_eq!(child_vec(&arena, dst), vec![]);
-    }
-
-    // ─── children iterator ──────────────────────────────────
-
-    #[test]
-    fn children_of_empty_node() {
-        let arena = Arena::new();
-        assert_eq!(child_vec(&arena, arena.document), vec![]);
-    }
-
-    #[test]
-    fn children_does_not_recurse() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let child = make_element(&mut arena, "span");
-        let grandchild = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, child);
-        arena.append_child(child, grandchild);
-
-        // children() should only return direct children
-        assert_eq!(child_vec(&arena, parent), vec![child]);
-    }
-
-    // ─── element_data / element_data_mut ────────────────────
-
-    #[test]
-    fn element_data_returns_some_for_element() {
-        let mut arena = Arena::new();
-        let div = make_element_with_attrs(&mut arena, "div", &[("id", "main"), ("class", "foo")]);
-        let data = arena.element_data(div).unwrap();
-        assert_eq!(&*data.name.local, "div");
-        assert_eq!(data.get_attribute("id"), Some("main"));
-        assert_eq!(data.get_attribute("class"), Some("foo"));
-    }
-
-    #[test]
-    fn element_data_returns_none_for_text() {
-        let mut arena = Arena::new();
-        let text = make_text(&mut arena, "hello");
-        assert!(arena.element_data(text).is_none());
-    }
-
-    #[test]
-    fn element_data_returns_none_for_document() {
-        let arena = Arena::new();
-        assert!(arena.element_data(arena.document).is_none());
-    }
-
-    #[test]
-    fn element_data_mut_can_modify_attrs() {
-        let mut arena = Arena::new();
-        let div = make_element_with_attrs(&mut arena, "div", &[("class", "old")]);
-
-        arena.element_data_mut(div).unwrap().set_attribute("class", "new");
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("class"), Some("new"));
-
-        arena.element_data_mut(div).unwrap().set_attribute("id", "test");
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("id"), Some("test"));
-    }
-
-    // ─── find_element ───────────────────────────────────────
-
-    #[test]
-    fn find_element_in_nested_tree() {
-        let mut arena = Arena::new();
-        let html = make_element(&mut arena, "html");
-        let body = make_element(&mut arena, "body");
-        let div = make_element(&mut arena, "div");
-        let p = make_element(&mut arena, "p");
-
-        arena.append_child(arena.document, html);
-        arena.append_child(html, body);
-        arena.append_child(body, div);
-        arena.append_child(div, p);
-
-        assert_eq!(arena.find_element(arena.document, "p"), Some(p));
-        assert_eq!(arena.find_element(arena.document, "body"), Some(body));
-    }
-
-    #[test]
-    fn find_element_returns_first_match() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let p1 = make_element(&mut arena, "p");
-        let p2 = make_element(&mut arena, "p");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, p1);
-        arena.append_child(parent, p2);
-
-        assert_eq!(arena.find_element(arena.document, "p"), Some(p1));
-    }
-
-    #[test]
-    fn find_element_not_found() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        arena.append_child(arena.document, div);
-        assert_eq!(arena.find_element(arena.document, "span"), None);
-    }
-
-    #[test]
-    fn find_element_scoped_to_subtree() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let child1 = make_element(&mut arena, "section");
-        let child2 = make_element(&mut arena, "aside");
-        let target = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, child1);
-        arena.append_child(parent, child2);
-        arena.append_child(child2, target);
-
-        // Search from child1 should not find target under child2
-        assert_eq!(arena.find_element(child1, "a"), None);
-        assert_eq!(arena.find_element(child2, "a"), Some(target));
-    }
-
-    // ─── Attribute operations on ElementData ────────────────
-
-    #[test]
-    fn get_attribute_missing() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("id"), None);
-    }
-
-    #[test]
-    fn set_attribute_creates_new() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        arena.element_data_mut(div).unwrap().set_attribute("id", "test");
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("id"), Some("test"));
-    }
-
-    #[test]
-    fn set_attribute_overwrites_existing() {
-        let mut arena = Arena::new();
-        let div = make_element_with_attrs(&mut arena, "div", &[("id", "old")]);
-        arena.element_data_mut(div).unwrap().set_attribute("id", "new");
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("id"), Some("new"));
-        // Should not duplicate the attribute
-        assert_eq!(arena.element_data(div).unwrap().attrs.len(), 1);
-    }
-
-    #[test]
-    fn remove_attribute_existing() {
-        let mut arena = Arena::new();
-        let div = make_element_with_attrs(&mut arena, "div", &[("id", "x"), ("class", "y")]);
-        let removed = arena.element_data_mut(div).unwrap().remove_attribute("id");
-        assert!(removed);
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("id"), None);
-        assert_eq!(arena.element_data(div).unwrap().get_attribute("class"), Some("y"));
-    }
-
-    #[test]
-    fn remove_attribute_nonexistent() {
-        let mut arena = Arena::new();
-        let div = make_element(&mut arena, "div");
-        let removed = arena.element_data_mut(div).unwrap().remove_attribute("nope");
-        assert!(!removed);
-    }
-
-    // ─── Complex tree operations ────────────────────────────
-
-    #[test]
-    fn build_realistic_tree_and_verify_structure() {
-        // Build: <html><head><title></title></head><body><div><p></p><p></p></div></body></html>
-        let mut arena = Arena::new();
-        let html = make_element(&mut arena, "html");
-        let head = make_element(&mut arena, "head");
-        let title = make_element(&mut arena, "title");
-        let body = make_element(&mut arena, "body");
-        let div = make_element(&mut arena, "div");
-        let p1 = make_element(&mut arena, "p");
-        let p2 = make_element(&mut arena, "p");
-
-        arena.append_child(arena.document, html);
-        arena.append_child(html, head);
-        arena.append_child(head, title);
-        arena.append_child(html, body);
-        arena.append_child(body, div);
-        arena.append_child(div, p1);
-        arena.append_child(div, p2);
-
-        // Verify entire structure
-        assert_eq!(child_vec(&arena, arena.document), vec![html]);
-        assert_eq!(child_vec(&arena, html), vec![head, body]);
-        assert_eq!(child_vec(&arena, head), vec![title]);
-        assert_eq!(child_vec(&arena, body), vec![div]);
-        assert_eq!(child_vec(&arena, div), vec![p1, p2]);
-        assert_eq!(child_vec(&arena, p1), vec![]);
-
-        // Verify parent chain
-        assert_eq!(arena.nodes[p1].parent, Some(div));
-        assert_eq!(arena.nodes[div].parent, Some(body));
-        assert_eq!(arena.nodes[body].parent, Some(html));
-        assert_eq!(arena.nodes[html].parent, Some(arena.document));
-    }
-
-    #[test]
-    fn move_subtree_between_parents() {
-        let mut arena = Arena::new();
-        let src = make_element(&mut arena, "div");
-        let dst = make_element(&mut arena, "span");
-        let subtree_root = make_element(&mut arena, "section");
-        let deep_child = make_element(&mut arena, "a");
-
-        arena.append_child(arena.document, src);
-        arena.append_child(arena.document, dst);
-        arena.append_child(src, subtree_root);
-        arena.append_child(subtree_root, deep_child);
-
-        // Move subtree_root (with deep_child) from src to dst
-        arena.append_child(dst, subtree_root);
-
-        assert_eq!(child_vec(&arena, src), vec![]);
-        assert_eq!(child_vec(&arena, dst), vec![subtree_root]);
-        assert_eq!(child_vec(&arena, subtree_root), vec![deep_child]);
-        assert_eq!(arena.nodes[subtree_root].parent, Some(dst));
-        assert_eq!(arena.nodes[deep_child].parent, Some(subtree_root));
-    }
-
-    #[test]
-    fn reorder_children_via_detach_and_append() {
-        let mut arena = Arena::new();
-        let parent = make_element(&mut arena, "div");
-        let a = make_element(&mut arena, "a");
-        let b = make_element(&mut arena, "b");
-        let c = make_element(&mut arena, "c");
-
-        arena.append_child(arena.document, parent);
-        arena.append_child(parent, a);
-        arena.append_child(parent, b);
-        arena.append_child(parent, c);
-
-        // Move 'a' to the end: [b, c, a]
-        arena.detach(a);
-        arena.append_child(parent, a);
-
-        assert_eq!(child_vec(&arena, parent), vec![b, c, a]);
-        assert_eq!(arena.nodes[parent].first_child, Some(b));
-        assert_eq!(arena.nodes[parent].last_child, Some(a));
-    }
-}
+#[path = "arena_tests.rs"]
+mod tests;

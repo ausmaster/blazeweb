@@ -27,7 +27,7 @@ fn serialize_node(arena: &Arena, id: NodeId, output: &mut String) {
     let node = &arena.nodes[id];
 
     match &node.data {
-        NodeData::Document => {
+        NodeData::Document | NodeData::DocumentFragment => {
             // Serialize children only
             for child in arena.children(id) {
                 serialize_node(arena, child, output);
@@ -176,7 +176,7 @@ mod tests {
             "script body must NOT be escaped. got: {html}"
         );
         assert!(
-            !html.contains("&lt;") || !html.contains("&amp;"),
+            !html.contains("&lt;") && !html.contains("&amp;"),
             "found escaped entities in script. got: {html}"
         );
     }

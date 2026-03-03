@@ -3,7 +3,7 @@ requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "blazeclient"
+name = "blazeweb"
 version = "0.1.0"
 description = "A Rust-powered HTML + JavaScript execution engine for Python"
 requires-python = ">=3.14"
@@ -23,14 +23,14 @@ conformance = [
 
 [tool.maturin]
 python-source = "python"
-module-name = "blazeclient._blazeclient"
+module-name = "blazeweb._blazeweb"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["tests/html5lib-tests"]
 markers = [
-    "conformance: tests comparing blazeclient against headless Chromium",
+    "conformance: tests comparing blazeweb against headless Chromium",
     "real_sites: gauntlet tests against real production websites",
-    "benchmark: performance comparison blazeclient vs Chromium",
+    "benchmark: performance comparison blazeweb vs Chromium",
 ]

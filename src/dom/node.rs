@@ -6,6 +6,9 @@ pub enum NodeData {
     /// The root document node.
     Document,
 
+    /// A document fragment (created by createDocumentFragment()).
+    DocumentFragment,
+
     /// An HTML element with a qualified name and attributes.
     Element(ElementData),
 
@@ -33,6 +36,24 @@ pub struct ElementData {
     pub script_already_started: bool,
     /// For <annotation-xml> elements with encoding="text/html" or "application/xhtml+xml".
     pub mathml_annotation_xml_integration_point: bool,
+}
+
+impl NodeData {
+    /// Get the character data string for Text and Comment nodes.
+    pub fn character_data(&self) -> Option<&String> {
+        match self {
+            NodeData::Text(s) | NodeData::Comment(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Get mutable character data string for Text and Comment nodes.
+    pub fn character_data_mut(&mut self) -> Option<&mut String> {
+        match self {
+            NodeData::Text(s) | NodeData::Comment(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 impl ElementData {

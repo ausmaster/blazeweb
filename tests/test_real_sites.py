@@ -1,11 +1,11 @@
-"""Real-website gauntlet: blazeclient vs headless Chromium on production sites.
+"""Real-website gauntlet: blazeweb vs headless Chromium on production sites.
 
 For each site we:
 1. Navigate Chromium to the URL (full render with all resources)
 2. Capture the raw page source (before JS) via response interception
-3. Feed the raw source to blazeclient.render(html, base_url=url)
-4. Assert blazeclient doesn't crash/panic
-5. Compare DOM similarity between blazeclient output and Chromium output
+3. Feed the raw source to blazeweb.render(html, base_url=url)
+4. Assert blazeweb doesn't crash/panic
+5. Compare DOM similarity between blazeweb output and Chromium output
 6. Report a per-site scorecard and final summary table
 """
 
@@ -24,7 +24,7 @@ import pytest
 
 lxml_html = pytest.importorskip("lxml.html")
 
-import blazeclient  # noqa: E402
+import blazeweb  # noqa: E402
 
 pytestmark = [pytest.mark.conformance, pytest.mark.real_sites]
 
@@ -286,7 +286,7 @@ def score_site(url: str, bc_html: str, chrome_html: str, render_time_ms: float) 
 
 # ── Subprocess isolation ─────────────────────────────────────────────────────
 # V8 debug builds can abort() on certain pages (e.g. ICU assertions).
-# Running blazeclient.render() in a forked child ensures a V8 crash doesn't
+# Running blazeweb.render() in a forked child ensures a V8 crash doesn't
 # kill the entire test runner.
 
 
@@ -294,7 +294,7 @@ def _render_worker(html: str, base_url: str, out_path: str, err_path: str):
     """Worker function run in a child process."""
     try:
         t0 = time.perf_counter()
-        result = blazeclient.render(html, base_url=base_url)
+        result = blazeweb.render(html, base_url=base_url)
         elapsed = (time.perf_counter() - t0) * 1000
         with open(out_path, "w") as f:
             f.write(result)
@@ -306,7 +306,7 @@ def _render_worker(html: str, base_url: str, out_path: str, err_path: str):
 
 
 def render_isolated(html: str, base_url: str, timeout: float = 60.0) -> tuple[str | None, float, str | None]:
-    """Run blazeclient.render() in a subprocess for crash isolation.
+    """Run blazeweb.render() in a subprocess for crash isolation.
 
     Returns (html_output, render_time_ms, error_message).
     If V8 crashes the child, html_output is None and error_message explains.
@@ -405,8 +405,8 @@ def test_real_site(url, gauntlet_context):
     """Render a real production site and compare against Chromium.
 
     Hard assertions:
-    - blazeclient must not crash/panic
-    - blazeclient must return non-empty HTML with >0 elements
+    - blazeweb must not crash/panic
+    - blazeweb must return non-empty HTML with >0 elements
 
     Soft reporting:
     - DOM similarity scores (tags, text, IDs)
@@ -443,7 +443,7 @@ def test_real_site(url, gauntlet_context):
 
     source_html = raw_html or chrome_html
 
-    # ── Step 2: Render with blazeclient (subprocess-isolated) ────────────
+    # ── Step 2: Render with blazeweb (subprocess-isolated) ────────────
     bc_html, render_ms, error = render_isolated(source_html, url)
 
     if bc_html is None:
@@ -451,7 +451,7 @@ def test_real_site(url, gauntlet_context):
         score.crash_message = error or "unknown"
         _all_scores.append(score)
         # Don't raise — the crash was contained. Just report it.
-        pytest.fail(f"blazeclient crashed on {url}: {error}", pytrace=False)
+        pytest.fail(f"blazeweb crashed on {url}: {error}", pytrace=False)
 
     # ── Step 3: Hard assertions ──────────────────────────────────────────
     assert isinstance(bc_html, str), f"render() returned {type(bc_html)}"
@@ -461,7 +461,7 @@ def test_real_site(url, gauntlet_context):
     score = score_site(url, bc_html, chrome_html, render_ms)
     _all_scores.append(score)
 
-    assert score.bc_element_count > 0, f"blazeclient produced 0 elements for {url}"
+    assert score.bc_element_count > 0, f"blazeweb produced 0 elements for {url}"
 
 
 def test_gauntlet_summary():
@@ -475,7 +475,7 @@ def test_gauntlet_summary():
 
     hdr = (
         f"\n{'='*96}\n"
-        f"  BLAZECLIENT GAUNTLET — {len(passed)} passed, "
+        f"  BLAZEWEB GAUNTLET — {len(passed)} passed, "
         f"{len(crashed)} crashed, {len(skipped)} skipped "
         f"(of {len(_all_scores)} sites)\n"
         f"{'='*96}"

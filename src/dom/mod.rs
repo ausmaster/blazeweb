@@ -1,10 +1,8 @@
 pub mod arena;
 pub mod node;
+pub mod selector;
 pub mod serialize;
 pub mod treesink;
-// pub mod classlist;  // TODO: Step 5
-// pub mod fragment;   // TODO: Step 3
-// pub mod style;      // TODO: Step 5
 
 pub use arena::{Arena, NodeId};
 #[allow(unused_imports)]

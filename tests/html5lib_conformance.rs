@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-// We access blazeclient's internal modules via the crate.
+// We access blazeweb's internal modules via the crate.
 // This is an integration test, so we use the public API re-exported from lib.
 // However, since lib.rs is a cdylib for PyO3, integration tests can't link
 // against it directly. Instead we build this as a unit test inside the crate.
@@ -137,8 +137,8 @@ fn parse_dat_file(content: &str, file_name: &str) -> Vec<TestCase> {
 }
 
 /// Dump an arena tree in html5lib format.
-fn dump_tree(arena: &_blazeclient::dom::Arena, node_id: _blazeclient::dom::NodeId, indent: usize, output: &mut String) {
-    use _blazeclient::dom::node::NodeData;
+fn dump_tree(arena: &_blazeweb::dom::Arena, node_id: _blazeweb::dom::NodeId, indent: usize, output: &mut String) {
+    use _blazeweb::dom::node::NodeData;
 
     let node = &arena.nodes[node_id];
     let prefix = format!("| {}", "  ".repeat(indent));
@@ -303,11 +303,11 @@ fn html5lib_tree_construction_conformance() {
             let mut last_actual = String::new();
             for scripting_enabled in &modes {
                 let arena = if let Some(ref ctx) = tc.fragment_context {
-                    _blazeclient::dom::treesink::parse_fragment(
+                    _blazeweb::dom::treesink::parse_fragment(
                         &tc.data, ctx, *scripting_enabled,
                     )
                 } else {
-                    _blazeclient::dom::treesink::parse_with_options(
+                    _blazeweb::dom::treesink::parse_with_options(
                         &tc.data, *scripting_enabled,
                     )
                 };
@@ -384,14 +384,13 @@ fn html5lib_tree_construction_conformance() {
             eprintln!("  {count:3} {name}");
         }
 
-        // Don't hard-fail yet — track our conformance rate instead
         let rate = passed as f64 / (passed + failed) as f64 * 100.0;
         eprintln!("\nConformance rate: {rate:.1}% ({passed}/{} non-skipped tests)", passed + failed);
 
         // Require 100% conformance — any regression is a failure.
         assert!(
             rate >= 100.0,
-            "Conformance rate {rate:.1}% is below 80% threshold"
+            "Conformance rate {rate:.1}% — expected 100%. {failed} test(s) failed."
         );
     }
 }

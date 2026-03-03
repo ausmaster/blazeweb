@@ -14,6 +14,11 @@ pub struct WrapperCache {
     pub map: HashMap<NodeId, v8::Global<v8::Object>>,
 }
 
+/// Cache of NodeId → live childNodes Proxy for identity semantics.
+pub struct ChildNodesCache {
+    pub map: HashMap<NodeId, v8::Global<v8::Object>>,
+}
+
 /// Cached ObjectTemplates for each DOM type, stored in isolate slot.
 pub struct DomTemplates {
     pub document_template: v8::Global<v8::ObjectTemplate>,
@@ -119,6 +124,7 @@ pub fn wrap_node<'s>(
     let arena = unsafe { &*arena_ptr };
     let node_kind = match &arena.nodes[node_id].data {
         NodeData::Document => NodeKind::Document,
+        NodeData::DocumentFragment => NodeKind::Document, // Uses Node template like Document
         NodeData::Element(_) => NodeKind::Element,
         NodeData::Text(_) => NodeKind::Text,
         NodeData::Comment(_) => NodeKind::Comment,

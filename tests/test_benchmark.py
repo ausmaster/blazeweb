@@ -1,7 +1,7 @@
-"""Performance benchmark: blazeclient Client (with cache) vs headless Chromium.
+"""Performance benchmark: blazeweb Client (with cache) vs headless Chromium.
 
 For each site we fetch the raw HTML once, then time both engines on the same
-input.  blazeclient uses a Client with script cache — a cold pass populates
+input.  blazeweb uses a Client with script cache — a cold pass populates
 the cache, then a warm pass measures cached performance.  Chromium uses
 page.set_content() (parse + execute, no external script fetch).
 """
@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api")
 
-import blazeclient  # noqa: E402
+import blazeweb  # noqa: E402
 
 from test_real_sites import SITES  # noqa: E402
 
@@ -55,7 +55,7 @@ class BenchResult:
 _results: list[BenchResult] = []
 
 # Module-scoped Client — cache accumulates across all sites
-_client: blazeclient.Client | None = None
+_client: blazeweb.Client | None = None
 
 
 @pytest.fixture(scope="module")
@@ -70,9 +70,9 @@ def bench_browser():
 
 @pytest.fixture(scope="module")
 def bc_client():
-    """Module-scoped blazeclient Client with warm cache."""
+    """Module-scoped blazeweb Client with warm cache."""
     global _client
-    _client = blazeclient.Client()
+    _client = blazeweb.Client()
     # Warm up V8 platform
     _client.render("<html><body></body></html>")
     return _client
@@ -120,7 +120,7 @@ def _site_id(url: str) -> str:
 
 @pytest.mark.parametrize("url", BENCH_SITES, ids=[_site_id(u) for u in BENCH_SITES])
 def test_bench_site(url, bench_browser, html_cache, bc_client):
-    """Benchmark blazeclient Client (cold + warm) vs Chromium on one site."""
+    """Benchmark blazeweb Client (cold + warm) vs Chromium on one site."""
     if url not in html_cache:
         r = BenchResult(url=url, html_bytes=0, bc_cold_ms=0, bc_warm_ms=0,
                         chrome_ms=0, skipped=True, skip_reason="fetch failed")
@@ -129,7 +129,7 @@ def test_bench_site(url, bench_browser, html_cache, bc_client):
 
     html = html_cache[url]
 
-    # ── blazeclient COLD: first render, fetches + caches external scripts ──
+    # ── blazeweb COLD: first render, fetches + caches external scripts ──
     t0 = time.perf_counter()
     try:
         bc_client.render(html, base_url=url)
@@ -137,7 +137,7 @@ def test_bench_site(url, bench_browser, html_cache, bc_client):
         pass
     bc_cold_ms = (time.perf_counter() - t0) * 1000
 
-    # ── blazeclient WARM: second render, cache hits ────────────────────────
+    # ── blazeweb WARM: second render, cache hits ────────────────────────
     t0 = time.perf_counter()
     try:
         bc_client.render(html, base_url=url)
@@ -179,11 +179,11 @@ def test_benchmark_summary():
 
     hdr = (
         f"\n{'='*115}\n"
-        f"  BLAZECLIENT CLIENT vs CHROMIUM — Performance Benchmark ({len(valid)} sites)\n"
+        f"  BLAZEWEB CLIENT vs CHROMIUM — Performance Benchmark ({len(valid)} sites)\n"
         f"{'='*115}\n"
         f"\n"
-        f"  blazeclient (warm cache) faster: {len(warm_faster)}/{len(valid)} sites\n"
-        f"  blazeclient (cold, no cache) faster: {len(cold_faster)}/{len(valid)} sites\n"
+        f"  blazeweb (warm cache) faster: {len(warm_faster)}/{len(valid)} sites\n"
+        f"  blazeweb (cold, no cache) faster: {len(cold_faster)}/{len(valid)} sites\n"
         f"\n"
         f"  Total time:  cold {total_cold/1000:.2f}s  |  warm {total_warm/1000:.2f}s  |  "
         f"Chromium {total_ch/1000:.2f}s\n"

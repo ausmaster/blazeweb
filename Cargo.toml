@@ -1,11 +1,11 @@
 [package]
-name = "blazeclient"
+name = "blazeweb"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [lib]
-name = "_blazeclient"
+name = "_blazeweb"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
@@ -14,11 +14,24 @@ v8 = "135"
 html5ever = "0.38"
 markup5ever = "0.38"
 slotmap = "1.0"
-reqwest = { version = "0.12", features = ["http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "gzip", "brotli", "deflate", "rustls-tls"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
+webpki-roots = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 selectors = "0.26"
+cssparser = "0.34"
+precomputed-hash = "0.1"
 thiserror = "2"
 log = "0.4"
+env_logger = "0.11"
+deno_core_icudata = "=0.74.0"
+cookie = { version = "0.18", features = ["percent-encode"] }
+httpdate = "1"
+url = "2"
+
+[dev-dependencies]
+regex = "1"
 
 [profile.release]
 opt-level = 3
