@@ -335,14 +335,59 @@ fn is_localhost(url: &Url) -> bool {
         .is_some_and(|h| h == "localhost" || h == "127.0.0.1" || h == "::1")
 }
 
-/// Scheme dispatch: http/https → http_fetch.
+/// Scheme dispatch: http/https → http_fetch, data: → data_fetch.
 async fn main_fetch(request: &mut Request, context: &FetchContext) -> Response {
     let scheme = request.current_url().scheme().to_string();
     match scheme.as_str() {
         "http" | "https" => http_fetch(request, context).await,
+        "data" => data_fetch(request),
         _ => {
             log::warn!("[fetch] unsupported scheme: {}", scheme);
             Response::network_error(&format!("unsupported scheme: {}", scheme))
+        }
+    }
+}
+
+/// Fetch a `data:` URL per Fetch spec §6.
+///
+/// Parses the data URL, decodes the body (percent-encoded or base64),
+/// and returns a synthetic response with the decoded body and MIME type.
+fn data_fetch(request: &Request) -> Response {
+    let url = request.current_url();
+    let url_str = url.as_str();
+
+    match data_url::DataUrl::process(url_str) {
+        Ok(data_url) => {
+            match data_url.decode_to_vec() {
+                Ok((body, _fragment)) => {
+                    let mime = data_url.mime_type();
+                    let content_type = mime.to_string();
+                    log::debug!(
+                        "[fetch:data] decoded {} bytes, content-type: {}",
+                        body.len(), content_type,
+                    );
+                    let mut headers = reqwest::header::HeaderMap::new();
+                    if let Ok(val) = reqwest::header::HeaderValue::from_str(&content_type) {
+                        headers.insert(reqwest::header::CONTENT_TYPE, val);
+                    }
+                    Response {
+                        response_type: super::response::ResponseType::Basic,
+                        status: 200,
+                        status_text: "OK".to_string(),
+                        headers,
+                        body,
+                        url_list: vec![url.clone()],
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[fetch:data] decode failed: {:?}", e);
+                    Response::network_error(&format!("data URL decode failed: {:?}", e))
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("[fetch:data] parse failed: {:?}", e);
+            Response::network_error(&format!("data URL parse failed: {:?}", e))
         }
     }
 }
@@ -655,144 +700,6 @@ fn same_origin(a: &Url, b: &Url) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "fetch_tests.rs"]
+mod tests;
 
-    #[test]
-    fn test_resolve_absolute_url() {
-        let url = resolve_url("https://example.com/app.js", None).unwrap();
-        assert_eq!(url.as_str(), "https://example.com/app.js");
-    }
-
-    #[test]
-    fn test_resolve_relative_url() {
-        let url = resolve_url("lib.js", Some("https://example.com/page/")).unwrap();
-        assert_eq!(url.as_str(), "https://example.com/page/lib.js");
-    }
-
-    #[test]
-    fn test_resolve_absolute_path() {
-        let url = resolve_url("/scripts/app.js", Some("https://example.com/page/")).unwrap();
-        assert_eq!(url.as_str(), "https://example.com/scripts/app.js");
-    }
-
-    #[test]
-    fn test_resolve_relative_no_base() {
-        let err = resolve_url("app.js", None).unwrap_err();
-        assert!(err.to_string().contains("no base_url"));
-    }
-
-    #[test]
-    fn test_client_initializes() {
-        let _ = CLIENT.get("https://example.com");
-    }
-
-    #[test]
-    fn test_set_default_headers_document() {
-        let url = Url::parse("https://example.com").unwrap();
-        let mut req = Request::document(url);
-        set_default_headers(&mut req);
-        assert!(req.headers.get("accept").unwrap().to_str().unwrap().starts_with("text/html"));
-        assert!(req.headers.get("user-agent").unwrap().to_str().unwrap().contains("Blazeweb"));
-        assert_eq!(req.headers.get("sec-fetch-dest").unwrap(), "document");
-        assert_eq!(req.headers.get("sec-fetch-mode").unwrap(), "navigate");
-        assert_eq!(req.headers.get("sec-fetch-site").unwrap(), "none");
-        assert_eq!(req.headers.get("sec-fetch-user").unwrap(), "?1");
-        assert_eq!(req.headers.get("upgrade-insecure-requests").unwrap(), "1");
-    }
-
-    #[test]
-    fn test_set_default_headers_script() {
-        let url = Url::parse("https://cdn.example.com/app.js").unwrap();
-        let mut req = Request::script(url);
-        set_default_headers(&mut req);
-        assert_eq!(req.headers.get("accept").unwrap(), "*/*");
-        assert_eq!(req.headers.get("sec-fetch-dest").unwrap(), "script");
-        assert_eq!(req.headers.get("sec-fetch-mode").unwrap(), "no-cors");
-        assert!(req.headers.get("sec-fetch-user").is_none());
-        assert!(req.headers.get("upgrade-insecure-requests").is_none());
-    }
-
-    #[test]
-    fn test_set_default_headers_no_sec_on_http() {
-        let url = Url::parse("http://example.com/page").unwrap();
-        let mut req = Request::document(url);
-        set_default_headers(&mut req);
-        assert!(req.headers.get("sec-fetch-dest").is_none());
-        assert!(req.headers.get("sec-fetch-mode").is_none());
-    }
-
-    #[test]
-    fn test_set_default_headers_preserves_existing() {
-        let url = Url::parse("https://api.example.com/data").unwrap();
-        let mut req = Request::fetch_api(url, Method::GET);
-        req.headers.insert("accept", HeaderValue::from_static("application/json"));
-        set_default_headers(&mut req);
-        assert_eq!(req.headers.get("accept").unwrap(), "application/json");
-    }
-
-    #[test]
-    fn test_same_origin() {
-        let a = Url::parse("https://example.com/a").unwrap();
-        let b = Url::parse("https://example.com/b").unwrap();
-        assert!(same_origin(&a, &b));
-
-        let c = Url::parse("https://other.com/a").unwrap();
-        assert!(!same_origin(&a, &c));
-
-        let d = Url::parse("http://example.com/a").unwrap();
-        assert!(!same_origin(&a, &d));
-    }
-
-    #[test]
-    fn test_strip_body_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("content-type", HeaderValue::from_static("text/plain"));
-        headers.insert("content-length", HeaderValue::from_static("42"));
-        headers.insert("authorization", HeaderValue::from_static("Bearer token"));
-        headers.insert("accept", HeaderValue::from_static("*/*"));
-        strip_body_headers(&mut headers);
-        assert!(headers.get("content-type").is_none());
-        assert!(headers.get("content-length").is_none());
-        assert!(headers.get("authorization").is_some());
-        assert!(headers.get("accept").is_some());
-    }
-
-    #[test]
-    fn test_is_localhost() {
-        assert!(is_localhost(&Url::parse("http://localhost:8080").unwrap()));
-        assert!(is_localhost(&Url::parse("http://127.0.0.1").unwrap()));
-        assert!(!is_localhost(&Url::parse("http://example.com").unwrap()));
-    }
-
-    #[test]
-    fn test_fetch_document_http() {
-        let url = Url::parse("http://example.com").unwrap();
-        let ctx = FetchContext::new(Some("http://example.com"));
-        let mut req = Request::document(url);
-        let resp = fetch(&mut req, &ctx);
-        assert!(resp.ok());
-        assert!(resp.text().contains("Example Domain"));
-    }
-
-    #[test]
-    fn test_fetch_document_https() {
-        let url = Url::parse("https://httpbin.org/html").unwrap();
-        let ctx = FetchContext::new(Some("https://httpbin.org/html"));
-        let mut req = Request::document(url);
-        let resp = fetch(&mut req, &ctx);
-        assert!(resp.ok());
-        assert!(resp.text().contains("Herman Melville"));
-    }
-
-    #[test]
-    fn test_fetch_redirect() {
-        // httpbin.org/redirect/1 does one redirect to /get
-        let url = Url::parse("https://httpbin.org/redirect/1").unwrap();
-        let ctx = FetchContext::new(None);
-        let mut req = Request::document(url);
-        let resp = fetch(&mut req, &ctx);
-        assert!(resp.ok());
-        assert!(resp.was_redirected());
-    }
-}

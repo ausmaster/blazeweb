@@ -1,4 +1,11 @@
+use std::cell::Cell;
+use std::sync::atomic::AtomicBool;
+
+use atomic_refcell::AtomicRefCell;
+use selectors::matching::ElementSelectorFlags;
 use slotmap::{new_key_type, SlotMap};
+use style::shared_lock::SharedRwLock;
+use style_dom::ElementState;
 
 use super::node::{ElementData, NodeData};
 
@@ -35,7 +42,6 @@ new_key_type! {
 ///
 /// Tree structure uses a linked-list with parent/child/sibling pointers,
 /// enabling O(1) insertBefore and removeChild.
-#[derive(Debug, Clone)]
 pub struct Node {
     pub data: NodeData,
     pub parent: Option<NodeId>,
@@ -44,6 +50,50 @@ pub struct Node {
     pub next_sibling: Option<NodeId>,
     pub prev_sibling: Option<NodeId>,
     pub flags: NodeFlags,
+
+    // ─── Stylo CSS engine fields ─────────────────────────────────────────────
+    /// Computed style data from Stylo's cascade. Only meaningful for Element nodes.
+    pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
+    /// Selector optimization flags set during selector matching.
+    pub selector_flags: Cell<ElementSelectorFlags>,
+    /// Element state for pseudo-class matching (:hover, :focus, :disabled, etc.).
+    pub element_state: ElementState,
+    /// Whether any descendant needs restyling (for incremental restyle).
+    pub dirty_descendants: AtomicBool,
+}
+
+// Manual Debug: skip stylo internals to keep output readable.
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("data", &self.data)
+            .field("parent", &self.parent)
+            .field("first_child", &self.first_child)
+            .field("last_child", &self.last_child)
+            .field("next_sibling", &self.next_sibling)
+            .field("prev_sibling", &self.prev_sibling)
+            .field("flags", &self.flags)
+            .finish_non_exhaustive()
+    }
+}
+
+// Manual Clone: clone DOM fields, reset stylo state (recomputed on next style pass).
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            parent: self.parent,
+            first_child: self.first_child,
+            last_child: self.last_child,
+            next_sibling: self.next_sibling,
+            prev_sibling: self.prev_sibling,
+            flags: self.flags,
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: Cell::new(ElementSelectorFlags::empty()),
+            element_state: ElementState::empty(),
+            dirty_descendants: AtomicBool::new(false),
+        }
+    }
 }
 
 impl Node {
@@ -56,6 +106,10 @@ impl Node {
             next_sibling: None,
             prev_sibling: None,
             flags: NodeFlags::default(),
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: Cell::new(ElementSelectorFlags::empty()),
+            element_state: ElementState::empty(),
+            dirty_descendants: AtomicBool::new(false),
         }
     }
 }
@@ -64,6 +118,8 @@ impl Node {
 pub struct Arena {
     pub nodes: SlotMap<NodeId, Node>,
     pub document: NodeId,
+    /// Shared lock for Stylo stylesheet access (one per document).
+    pub guard: SharedRwLock,
 }
 
 impl Arena {
@@ -73,7 +129,11 @@ impl Arena {
         let mut doc_node = Node::new(NodeData::Document);
         doc_node.flags.set_connected(true); // Document is always connected
         let document = nodes.insert(doc_node);
-        Self { nodes, document }
+        Self {
+            nodes,
+            document,
+            guard: SharedRwLock::new(),
+        }
     }
 
     // -- Node creation --

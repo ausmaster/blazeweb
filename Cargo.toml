@@ -19,8 +19,8 @@ rustls = { version = "0.23", features = ["ring"] }
 rustls-native-certs = "0.8"
 webpki-roots = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-selectors = "0.26"
-cssparser = "0.34"
+selectors = "0.35"
+cssparser = "0.36"
 precomputed-hash = "0.1"
 thiserror = "2"
 log = "0.4"
@@ -28,10 +28,22 @@ env_logger = "0.11"
 deno_core_icudata = "=0.74.0"
 cookie = { version = "0.18", features = ["percent-encode"] }
 httpdate = "1"
-url = "2"
+url = { version = "2", features = ["serde"] }
+data-url = "0.3"
 
-[dev-dependencies]
-regex = "1"
+# Stylo CSS engine + supporting crates
+style = { version = "0.12", package = "stylo", default-features = false, features = ["servo"] }
+style_traits = { version = "0.12", package = "stylo_traits", features = ["servo"] }
+style_dom = { version = "0.12", package = "stylo_dom" }
+servo_arc = "0.4"
+atomic_refcell = "0.1"
+euclid = "0.22"
+app_units = "0.7"
+string_cache = "0.9"
+web_atoms = "0.2"
+smallvec = "1"
+rayon = "1"
+
 
 [profile.release]
 opt-level = 3

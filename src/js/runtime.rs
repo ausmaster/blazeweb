@@ -60,6 +60,7 @@ struct ScriptInfo {
     source: ScriptSource,
     name: String,
     node_id: Option<NodeId>, // <script> element node for document.currentScript
+    is_module: bool,         // <script type="module">
 }
 
 /// Execute all scripts (inline + external) found in the parsed Arena.
@@ -216,6 +217,7 @@ fn execute_scripts_inner(
         log::info!("[{}] V8 isolate created, configuring...", url_label);
         iso.add_near_heap_limit_callback(near_heap_limit_callback, std::ptr::null_mut());
         iso.set_oom_error_handler(oom_error_handler);
+        super::modules::register_module_callbacks(&mut iso);
         iso
     };
     log::info!("[{}] V8 isolate ready in {:?}", url_label, t0.elapsed());
@@ -237,6 +239,10 @@ fn execute_scripts_inner(
     isolate.set_slot(super::bindings::document::CurrentScriptId(None));
     isolate.set_slot(super::fetch::FetchQueue::new());
     isolate.set_slot(super::mutation_observer::MutationObserverState::new());
+    isolate.set_slot(super::bindings::observers::IntersectionObserverState::new());
+    isolate.set_slot(super::bindings::observers::ResizeObserverState::new());
+    isolate.set_slot(super::bindings::observers::PerformanceObserverState::new());
+    isolate.set_slot(super::modules::ModuleMap::new());
     isolate.set_slot(fetch_context.clone());
 
     log::info!("[{}] creating handle scope...", url_label);
@@ -266,11 +272,23 @@ fn execute_scripts_inner(
     super::bindings::window::install_globals(scope);
     log::info!("[{}] setup complete, executing scripts...", url_label);
 
-    // Execute each script in document order
+    // Split scripts: classic first, then modules (per HTML spec, modules are deferred)
+    let classic_count = scripts.iter().filter(|s| !s.is_module).count();
+    let module_count = scripts.iter().filter(|s| s.is_module).count();
+    log::info!(
+        "[{}] executing {} classic scripts, then {} module scripts",
+        url_label, classic_count, module_count,
+    );
+
     let exec_start = std::time::Instant::now();
     let mut scripts_executed = 0usize;
     let mut scripts_errored = 0usize;
+
+    // Phase 1: Execute classic scripts in document order
     for (i, script) in scripts.iter().enumerate() {
+        if script.is_module {
+            continue; // Modules run in phase 2
+        }
         let source = match &script.source {
             ScriptSource::Inline(s) if !s.is_empty() => s.as_str(),
             _ => continue, // skip unfetched/empty scripts
@@ -281,7 +299,7 @@ fn execute_scripts_inner(
         }
         let script_start = std::time::Instant::now();
         log::debug!(
-            "[{}] exec script {}/{} \"{}\" ({} bytes)",
+            "[{}] exec classic {}/{} \"{}\" ({} bytes)",
             url_label, i + 1, scripts.len(), script.name,
             source.len(),
         );
@@ -307,15 +325,66 @@ fn execute_scripts_inner(
             cs.0 = None;
         }
     }
+
+    // Phase 2: Execute module scripts in document order (deferred per spec)
+    for (i, script) in scripts.iter().enumerate() {
+        if !script.is_module {
+            continue; // Already executed in phase 1
+        }
+        let source = match &script.source {
+            ScriptSource::Inline(s) if !s.is_empty() => s.as_str(),
+            _ => continue,
+        };
+        // document.currentScript is null during module execution per spec
+        if let Some(cs) = scope.get_slot_mut::<super::bindings::document::CurrentScriptId>() {
+            cs.0 = None;
+        }
+        let script_start = std::time::Instant::now();
+        log::debug!(
+            "[{}] exec module {}/{} \"{}\" ({} bytes)",
+            url_label, i + 1, scripts.len(), script.name,
+            source.len(),
+        );
+        match super::modules::execute_one_module(scope, source, &script.name, base_url) {
+            Ok(()) => {
+                scripts_executed += 1;
+                log::debug!(
+                    "[{}] module \"{}\" ok in {:?}",
+                    url_label, script.name, script_start.elapsed(),
+                );
+            }
+            Err(e) => {
+                scripts_errored += 1;
+                log::warn!(
+                    "[{}] module \"{}\" error in {:?}: {}",
+                    url_label, script.name, script_start.elapsed(), e,
+                );
+                errors.push(e.to_string());
+            }
+        }
+        scope.perform_microtask_checkpoint();
+    }
+
     log::info!(
-        "[{}] executed {}/{} scripts in {:?} ({} errors)",
-        url_label, scripts_executed, scripts.len(), exec_start.elapsed(), scripts_errored,
+        "[{}] executed {}/{} scripts in {:?} ({} errors, {} classic, {} modules)",
+        url_label, scripts_executed, scripts.len(), exec_start.elapsed(),
+        scripts_errored, classic_count, module_count,
     );
 
     // Post-script phase: fire DOMContentLoaded, then interleaved fetch+timer drain
     let dcl_errors = super::events::fire_dom_content_loaded(scope);
     scope.perform_microtask_checkpoint();
     errors.extend(dcl_errors);
+
+    // Fire observer callbacks before drain loop
+    // (observers are typically set up during script execution / DOMContentLoaded)
+    let io_errors = super::bindings::observers::drain_intersection_observers(scope);
+    errors.extend(io_errors);
+    let ro_errors = super::bindings::observers::drain_resize_observers(scope);
+    errors.extend(ro_errors);
+    let po_errors = super::bindings::observers::drain_performance_observers(scope);
+    errors.extend(po_errors);
+    scope.perform_microtask_checkpoint();
 
     // Interleaved drain: fetch results may schedule timers, timer callbacks may fetch
     for drain_round in 0..10 {
@@ -324,6 +393,14 @@ fn execute_scripts_inner(
 
         let timer_errors = super::timers::drain(scope, 1);
         errors.extend(timer_errors);
+
+        // Fire any newly registered observers from timer/fetch callbacks
+        let io_errors = super::bindings::observers::drain_intersection_observers(scope);
+        errors.extend(io_errors);
+        let ro_errors = super::bindings::observers::drain_resize_observers(scope);
+        errors.extend(ro_errors);
+        let po_errors = super::bindings::observers::drain_performance_observers(scope);
+        errors.extend(po_errors);
 
         scope.perform_microtask_checkpoint();
 
@@ -366,19 +443,26 @@ fn extract_scripts_recursive(
             if data.script_already_started {
                 return; // Already executed
             }
-            // Only execute classic scripts
+            // Skip <script nomodule> — we support modules, so nomodule fallback is skipped
+            if data.get_attribute("nomodule").is_some() {
+                return;
+            }
             let type_attr = data.get_attribute("type").unwrap_or("");
+            let is_module = type_attr == "module";
+            // Accept classic JS types and module type
             if !(type_attr.is_empty()
                 || type_attr == "text/javascript"
-                || type_attr == "application/javascript")
+                || type_attr == "application/javascript"
+                || is_module)
             {
-                return; // Non-JS type (module, json, etc.)
+                return; // Non-JS type (json, importmap, etc.)
             }
             if let Some(src) = data.get_attribute("src") {
                 scripts.push(ScriptInfo {
                     source: ScriptSource::External(src.to_owned()),
                     name: format!("{}", src),
                     node_id: Some(node),
+                    is_module,
                 });
             } else {
                 let text = collect_script_text(arena, node);
@@ -387,6 +471,7 @@ fn extract_scripts_recursive(
                         source: ScriptSource::Inline(text),
                         name: format!("inline-script-{}", *inline_idx),
                         node_id: Some(node),
+                        is_module,
                     });
                     *inline_idx += 1;
                 }

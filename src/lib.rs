@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 
+pub mod css;
 pub mod dom;
 mod engine;
 mod error;

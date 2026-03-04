@@ -102,25 +102,40 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     let key = v8::String::new(scope, "matchMedia").unwrap();
     global.set(scope, key.into(), mm.into());
 
-    // performance stub
+    // performance — real mark/measure that queue to PerformanceObserver
     let perf = v8::Object::new(scope);
-    let now_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
-        rv.set(v8::Number::new(scope, 0.0).into());
-    }).unwrap();
+    let now_fn = v8::Function::new(scope, perf_now).unwrap();
     let k = v8::String::new(scope, "now").unwrap();
     perf.set(scope, k.into(), now_fn.into());
-    let get_entries = v8::Function::new(scope, |scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
-        rv.set(v8::Array::new(scope, 0).into());
-    }).unwrap();
-    for name in &["getEntriesByType", "getEntriesByName", "getEntries"] {
-        let k = v8::String::new(scope, name).unwrap();
-        perf.set(scope, k.into(), get_entries.into());
-    }
-    let noop_fn = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
-    for name in &["mark", "measure", "clearMarks", "clearMeasures"] {
-        let k = v8::String::new(scope, name).unwrap();
-        perf.set(scope, k.into(), noop_fn.into());
-    }
+
+    let mark_fn = v8::Function::new(scope, perf_mark).unwrap();
+    let k = v8::String::new(scope, "mark").unwrap();
+    perf.set(scope, k.into(), mark_fn.into());
+
+    let measure_fn = v8::Function::new(scope, perf_measure).unwrap();
+    let k = v8::String::new(scope, "measure").unwrap();
+    perf.set(scope, k.into(), measure_fn.into());
+
+    let get_entries_fn = v8::Function::new(scope, perf_get_entries).unwrap();
+    let k = v8::String::new(scope, "getEntries").unwrap();
+    perf.set(scope, k.into(), get_entries_fn.into());
+
+    let get_entries_by_type_fn = v8::Function::new(scope, perf_get_entries_by_type).unwrap();
+    let k = v8::String::new(scope, "getEntriesByType").unwrap();
+    perf.set(scope, k.into(), get_entries_by_type_fn.into());
+
+    let get_entries_by_name_fn = v8::Function::new(scope, perf_get_entries_by_name).unwrap();
+    let k = v8::String::new(scope, "getEntriesByName").unwrap();
+    perf.set(scope, k.into(), get_entries_by_name_fn.into());
+
+    let clear_marks_fn = v8::Function::new(scope, perf_clear_marks).unwrap();
+    let k = v8::String::new(scope, "clearMarks").unwrap();
+    perf.set(scope, k.into(), clear_marks_fn.into());
+
+    let clear_measures_fn = v8::Function::new(scope, perf_clear_measures).unwrap();
+    let k = v8::String::new(scope, "clearMeasures").unwrap();
+    perf.set(scope, k.into(), clear_measures_fn.into());
+
     let timing = v8::Object::new(scope);
     let zero = v8::Number::new(scope, 0.0);
     for name in &["navigationStart", "domContentLoadedEventEnd", "loadEventEnd"] {
@@ -309,7 +324,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
         "AbortSignal", "XMLSerializer", "NodeList", "HTMLCollection",
         "DOMTokenList", "CSSStyleDeclaration", "NamedNodeMap", "DOMRect",
         "NodeFilter", "TreeWalker", "Range", "Selection",
-        "PerformanceObserver", "ReportingObserver",
+        "ReportingObserver",
         "Proxy", "WeakRef", "FinalizationRegistry",
         "BroadcastChannel", "MessagePort",
         "CSSStyleSheet", "StyleSheet", "MediaQueryList",
@@ -583,6 +598,241 @@ fn get_selection(
         obj.set(scope, k.into(), noop.into());
     }
     rv.set(obj.into());
+}
+
+// ─── performance.* functions ─────────────────────────────────────────────────
+
+/// Monotonic time counter for performance.now() — starts at 0 for each render.
+fn perf_now(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    // In SSR context, return 0.0 (no real time origin).
+    // Sites use this for relative timing, so 0 is fine.
+    rv.set(v8::Number::new(scope, 0.0).into());
+}
+
+fn perf_mark(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let mut start_time = 0.0;
+
+    // Check for options with startTime
+    if args.length() > 1 && args.get(1).is_object() {
+        let opts = unsafe { v8::Local::<v8::Object>::cast_unchecked(args.get(1)) };
+        let k = v8::String::new(scope, "startTime").unwrap();
+        if let Some(st) = opts.get(scope, k.into()) {
+            if st.is_number() {
+                start_time = st.number_value(scope).unwrap_or(0.0);
+            }
+        }
+    }
+
+    let entry = super::observers::PerformanceEntry {
+        name: name.clone(),
+        entry_type: "mark".to_string(),
+        start_time,
+        duration: 0.0,
+    };
+
+    // Add to PerformanceObserverState timeline
+    if let Some(state) = scope.get_slot_mut::<super::observers::PerformanceObserverState>() {
+        state.add_entry(entry.clone());
+    }
+
+    // Return the PerformanceMark entry object
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "name").unwrap();
+    let v = v8::String::new(scope, &entry.name).unwrap();
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "entryType").unwrap();
+    let v = v8::String::new(scope, "mark").unwrap();
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "startTime").unwrap();
+    let v = v8::Number::new(scope, entry.start_time);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "duration").unwrap();
+    let v = v8::Number::new(scope, 0.0);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
+}
+
+fn perf_measure(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let mut start_time = 0.0;
+    let mut end_time = 0.0;
+
+    if args.length() > 1 {
+        let arg1 = args.get(1);
+        if arg1.is_string() {
+            // measure(name, startMark) — look up mark time
+            let start_mark = arg1.to_rust_string_lossy(scope);
+            if let Some(state) = scope.get_slot::<super::observers::PerformanceObserverState>() {
+                if let Some(t) = state.get_mark_time(&start_mark) {
+                    start_time = t;
+                }
+            }
+            if args.length() > 2 {
+                let arg2 = args.get(2);
+                if arg2.is_string() {
+                    let end_mark = arg2.to_rust_string_lossy(scope);
+                    if let Some(state) = scope.get_slot::<super::observers::PerformanceObserverState>() {
+                        if let Some(t) = state.get_mark_time(&end_mark) {
+                            end_time = t;
+                        }
+                    }
+                }
+            }
+        } else if arg1.is_object() {
+            // measure(name, options) — options has start/end/duration/detail
+            let opts = unsafe { v8::Local::<v8::Object>::cast_unchecked(arg1) };
+            let start_key = v8::String::new(scope, "start").unwrap();
+            if let Some(sv) = opts.get(scope, start_key.into()) {
+                if sv.is_number() {
+                    start_time = sv.number_value(scope).unwrap_or(0.0);
+                } else if sv.is_string() {
+                    let mark_name = sv.to_rust_string_lossy(scope);
+                    if let Some(state) = scope.get_slot::<super::observers::PerformanceObserverState>() {
+                        if let Some(t) = state.get_mark_time(&mark_name) {
+                            start_time = t;
+                        }
+                    }
+                }
+            }
+            let end_key = v8::String::new(scope, "end").unwrap();
+            if let Some(ev) = opts.get(scope, end_key.into()) {
+                if ev.is_number() {
+                    end_time = ev.number_value(scope).unwrap_or(0.0);
+                } else if ev.is_string() {
+                    let mark_name = ev.to_rust_string_lossy(scope);
+                    if let Some(state) = scope.get_slot::<super::observers::PerformanceObserverState>() {
+                        if let Some(t) = state.get_mark_time(&mark_name) {
+                            end_time = t;
+                        }
+                    }
+                }
+            }
+            let dur_key = v8::String::new(scope, "duration").unwrap();
+            if let Some(dv) = opts.get(scope, dur_key.into()) {
+                if dv.is_number() {
+                    let dur = dv.number_value(scope).unwrap_or(0.0);
+                    end_time = start_time + dur;
+                }
+            }
+        }
+    }
+
+    let duration = end_time - start_time;
+    let entry = super::observers::PerformanceEntry {
+        name: name.clone(),
+        entry_type: "measure".to_string(),
+        start_time,
+        duration,
+    };
+
+    if let Some(state) = scope.get_slot_mut::<super::observers::PerformanceObserverState>() {
+        state.add_entry(entry.clone());
+    }
+
+    // Return the PerformanceMeasure entry object
+    let obj = v8::Object::new(scope);
+    let k = v8::String::new(scope, "name").unwrap();
+    let v = v8::String::new(scope, &entry.name).unwrap();
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "entryType").unwrap();
+    let v = v8::String::new(scope, "measure").unwrap();
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "startTime").unwrap();
+    let v = v8::Number::new(scope, entry.start_time);
+    obj.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "duration").unwrap();
+    let v = v8::Number::new(scope, entry.duration);
+    obj.set(scope, k.into(), v.into());
+    rv.set(obj.into());
+}
+
+fn perf_get_entries(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let entries: Vec<super::observers::PerformanceEntry> = scope
+        .get_slot::<super::observers::PerformanceObserverState>()
+        .map(|s| s.get_timeline().to_vec())
+        .unwrap_or_default();
+    let arr = super::observers::build_performance_entries_array(scope, &entries);
+    rv.set(arr.into());
+}
+
+fn perf_get_entries_by_type(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let type_str = args.get(0).to_rust_string_lossy(scope);
+    let entries = scope
+        .get_slot::<super::observers::PerformanceObserverState>()
+        .map(|s| super::observers::PerformanceEntry::filter_by_type(s.get_timeline(), &type_str))
+        .unwrap_or_default();
+    let arr = super::observers::build_performance_entries_array(scope, &entries);
+    rv.set(arr.into());
+}
+
+fn perf_get_entries_by_name(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let name_str = args.get(0).to_rust_string_lossy(scope);
+    let type_filter = if args.length() > 1 && !args.get(1).is_undefined() {
+        Some(args.get(1).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    let entries = scope
+        .get_slot::<super::observers::PerformanceObserverState>()
+        .map(|s| super::observers::PerformanceEntry::filter_by_name(s.get_timeline(), &name_str, type_filter.as_deref()))
+        .unwrap_or_default();
+    let arr = super::observers::build_performance_entries_array(scope, &entries);
+    rv.set(arr.into());
+}
+
+fn perf_clear_marks(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let name_filter = if args.length() > 0 && !args.get(0).is_undefined() {
+        Some(args.get(0).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    if let Some(state) = scope.get_slot_mut::<super::observers::PerformanceObserverState>() {
+        state.clear_marks(name_filter.as_deref());
+    }
+}
+
+fn perf_clear_measures(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let name_filter = if args.length() > 0 && !args.get(0).is_undefined() {
+        Some(args.get(0).to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    if let Some(state) = scope.get_slot_mut::<super::observers::PerformanceObserverState>() {
+        state.clear_measures(name_filter.as_deref());
+    }
 }
 
 fn structured_clone(

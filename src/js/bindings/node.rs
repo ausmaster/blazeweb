@@ -532,6 +532,20 @@ fn text_content_setter(
     let value = args.get(0);
     let text = value.to_rust_string_lossy(scope);
     let arena = arena_mut(scope);
+
+    // Per WHATWG DOM §4.4: for Text/Comment nodes, setting textContent
+    // replaces the node's data (characterData mutation), not childList.
+    match &mut arena.nodes[node_id].data {
+        NodeData::Text(s) | NodeData::Comment(s) => {
+            let old_value = s.clone();
+            *s = text;
+            crate::js::mutation_observer::notify_character_data(scope, node_id, &old_value);
+            return;
+        }
+        _ => {}
+    }
+
+    // For Element/Document/DocumentFragment: replace all children with a text node.
     // Capture old children for MO
     let old_children: Vec<crate::dom::NodeId> = arena.children(node_id).collect();
     arena.remove_all_children(node_id);

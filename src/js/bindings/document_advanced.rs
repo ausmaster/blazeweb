@@ -1138,6 +1138,11 @@ pub(super) fn adopt_node(
     if matches!(&arena.nodes[node_id].data, NodeData::Document) {
         let msg = v8::String::new(scope, "Failed to execute 'adoptNode' on 'Document': The node provided is a document, which may not be adopted.").unwrap();
         let exc = v8::Exception::error(scope, msg);
+        if let Some(exc_obj) = exc.to_object(scope) {
+            let name_key = v8::String::new(scope, "name").unwrap();
+            let name_val = v8::String::new(scope, "NotSupportedError").unwrap();
+            exc_obj.set(scope, name_key.into(), name_val.into());
+        }
         scope.throw_exception(exc);
         return;
     }
@@ -1176,6 +1181,11 @@ pub(super) fn import_node(
     if matches!(&arena.nodes[node_id].data, NodeData::Document) {
         let msg = v8::String::new(scope, "Failed to execute 'importNode' on 'Document': The node provided is a document, which may not be imported.").unwrap();
         let exc = v8::Exception::error(scope, msg);
+        if let Some(exc_obj) = exc.to_object(scope) {
+            let name_key = v8::String::new(scope, "name").unwrap();
+            let name_val = v8::String::new(scope, "NotSupportedError").unwrap();
+            exc_obj.set(scope, name_key.into(), name_val.into());
+        }
         scope.throw_exception(exc);
         return;
     }

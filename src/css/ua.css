@@ -1,0 +1,81 @@
+/* User-Agent Stylesheet — Minimal browser defaults for SSR
+ * Based on https://html.spec.whatwg.org/multipage/rendering.html#the-css-user-agent-style-sheet-and-presentational-hints
+ */
+
+/* Block-level elements */
+html, body, div, section, nav, article, aside, header, footer, main,
+address, blockquote, center, details, dialog, dd, dl, dt, fieldset,
+figcaption, figure, form, hr, legend, listing, menu, ol, ul, p, pre,
+plaintext, search, summary, xmp, h1, h2, h3, h4, h5, h6 {
+    display: block;
+}
+
+/* Hidden elements */
+head, link, meta, title, style, script, noscript,
+[hidden], template, area, base, basefont, datalist, param, source, track {
+    display: none;
+}
+
+/* Headings */
+h1 { font-size: 2em; font-weight: bold; margin-block-start: 0.67em; margin-block-end: 0.67em; }
+h2 { font-size: 1.5em; font-weight: bold; margin-block-start: 0.83em; margin-block-end: 0.83em; }
+h3 { font-size: 1.17em; font-weight: bold; margin-block-start: 1em; margin-block-end: 1em; }
+h4 { font-weight: bold; margin-block-start: 1.33em; margin-block-end: 1.33em; }
+h5 { font-size: 0.83em; font-weight: bold; margin-block-start: 1.67em; margin-block-end: 1.67em; }
+h6 { font-size: 0.67em; font-weight: bold; margin-block-start: 2.33em; margin-block-end: 2.33em; }
+
+/* Paragraphs */
+p { margin-block-start: 1em; margin-block-end: 1em; }
+
+/* Lists */
+ul, menu, dir { padding-inline-start: 40px; margin-block-start: 1em; margin-block-end: 1em; }
+ol { padding-inline-start: 40px; margin-block-start: 1em; margin-block-end: 1em; }
+li { display: list-item; }
+dd { margin-inline-start: 40px; }
+
+/* Tables */
+table { display: table; border-collapse: separate; border-spacing: 2px; border-color: gray; }
+thead { display: table-header-group; }
+tbody { display: table-row-group; }
+tfoot { display: table-footer-group; }
+tr { display: table-row; }
+td, th { display: table-cell; padding: 1px; }
+th { font-weight: bold; text-align: center; }
+caption { display: table-caption; }
+colgroup { display: table-column-group; }
+col { display: table-column; }
+
+/* Inline elements */
+b, strong { font-weight: bold; }
+i, em, cite, var, dfn { font-style: italic; }
+u, ins { text-decoration: underline; }
+s, strike, del { text-decoration: line-through; }
+small { font-size: smaller; }
+sub { vertical-align: sub; font-size: smaller; }
+sup { vertical-align: super; font-size: smaller; }
+code, kbd, samp, tt { font-family: monospace; }
+pre, xmp, plaintext, listing { white-space: pre; font-family: monospace; }
+a:link { color: #0000EE; text-decoration: underline; }
+a:visited { color: #551A8B; text-decoration: underline; }
+
+/* Form elements */
+input, textarea, select, button { display: inline-block; }
+
+/* Images and replaced elements */
+img, svg, video, canvas, audio, iframe, embed, object { display: inline-block; }
+
+/* Blockquote */
+blockquote { margin-block-start: 1em; margin-block-end: 1em; margin-inline-start: 40px; margin-inline-end: 40px; }
+
+/* HR */
+hr { border-style: inset; border-width: 1px; margin-block-start: 0.5em; margin-block-end: 0.5em; }
+
+/* Bidirectional text */
+bdo[dir="ltr"] { direction: ltr; unicode-bidi: bidi-override; }
+bdo[dir="rtl"] { direction: rtl; unicode-bidi: bidi-override; }
+
+/* Body default margin */
+body { margin: 8px; }
+
+/* HTML root */
+html { display: block; }
