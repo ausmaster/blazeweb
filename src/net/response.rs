@@ -12,6 +12,7 @@ use reqwest::Url;
 ///
 /// Controls header filtering for JS-visible responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Spec-complete enum
 pub enum ResponseType {
     /// Same-origin response — all headers visible except Set-Cookie.
     Basic,

@@ -52,6 +52,14 @@ pub struct Node {
     pub flags: NodeFlags,
 
     // ─── Stylo CSS engine fields ─────────────────────────────────────────────
+    /// Cached interned atoms for Stylo trait methods (avoids per-call allocation).
+    /// Populated once before style resolution from element's markup5ever data.
+    pub cached_atom_local_name: Option<web_atoms::LocalName>,
+    pub cached_atom_namespace: Option<web_atoms::Namespace>,
+    pub cached_atom_id: Option<style::Atom>,
+    /// Parsed inline style attribute (style="...") for Stylo's cascade.
+    pub parsed_style_attribute:
+        Option<style::servo_arc::Arc<style::shared_lock::Locked<style::properties::PropertyDeclarationBlock>>>,
     /// Computed style data from Stylo's cascade. Only meaningful for Element nodes.
     pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
     /// Selector optimization flags set during selector matching.
@@ -60,6 +68,16 @@ pub struct Node {
     pub element_state: ElementState,
     /// Whether any descendant needs restyling (for incremental restyle).
     pub dirty_descendants: AtomicBool,
+
+    // ─── Taffy layout engine fields ─────────────────────────────────────────
+    /// Taffy style (converted from Stylo ComputedValues before layout).
+    pub taffy_style: taffy::Style<style::Atom>,
+    /// Final rounded layout from Taffy (position + size + box model).
+    pub taffy_layout: taffy::Layout,
+    /// Taffy layout cache for incremental updates.
+    pub taffy_cache: taffy::Cache,
+    /// Pre-rounding layout (used by RoundTree trait).
+    pub taffy_unrounded: taffy::Layout,
 }
 
 // Manual Debug: skip stylo internals to keep output readable.
@@ -88,10 +106,18 @@ impl Clone for Node {
             next_sibling: self.next_sibling,
             prev_sibling: self.prev_sibling,
             flags: self.flags,
+            cached_atom_local_name: None,
+            cached_atom_namespace: None,
+            cached_atom_id: None,
+            parsed_style_attribute: None,
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
             element_state: ElementState::empty(),
             dirty_descendants: AtomicBool::new(false),
+            taffy_style: Default::default(),
+            taffy_layout: taffy::Layout::new(),
+            taffy_cache: taffy::Cache::new(),
+            taffy_unrounded: taffy::Layout::new(),
         }
     }
 }
@@ -106,10 +132,18 @@ impl Node {
             next_sibling: None,
             prev_sibling: None,
             flags: NodeFlags::default(),
+            cached_atom_local_name: None,
+            cached_atom_namespace: None,
+            cached_atom_id: None,
+            parsed_style_attribute: None,
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: Cell::new(ElementSelectorFlags::empty()),
             element_state: ElementState::empty(),
             dirty_descendants: AtomicBool::new(false),
+            taffy_style: Default::default(),
+            taffy_layout: taffy::Layout::new(),
+            taffy_cache: taffy::Cache::new(),
+            taffy_unrounded: taffy::Layout::new(),
         }
     }
 }
@@ -251,6 +285,40 @@ impl Arena {
 
     // -- Tree queries --
 
+    /// Compute the absolute position of a node by walking up the ancestor chain
+    /// and summing `taffy_layout.location` offsets.
+    pub fn absolute_position(&self, node_id: NodeId) -> (f32, f32) {
+        let mut x = 0.0f32;
+        let mut y = 0.0f32;
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let layout = &self.nodes[id].taffy_layout;
+            x += layout.location.x;
+            y += layout.location.y;
+            current = self.nodes[id].parent;
+        }
+        (x, y)
+    }
+
+    /// Get the bounding client rect of a node (absolute position + size).
+    /// Returns (x, y, width, height).
+    pub fn bounding_rect(&self, node_id: NodeId) -> (f32, f32, f32, f32) {
+        let (x, y) = self.absolute_position(node_id);
+        let layout = &self.nodes[node_id].taffy_layout;
+        (x, y, layout.size.width, layout.size.height)
+    }
+
+    /// Get the content box of a node (size minus padding and border).
+    /// Returns (x_offset, y_offset, width, height) where offsets are relative to the border box.
+    pub fn content_box(&self, node_id: NodeId) -> (f32, f32, f32, f32) {
+        let layout = &self.nodes[node_id].taffy_layout;
+        let x = layout.padding.left + layout.border.left;
+        let y = layout.padding.top + layout.border.top;
+        let w = (layout.size.width - x - layout.padding.right - layout.border.right).max(0.0);
+        let h = (layout.size.height - y - layout.padding.bottom - layout.border.bottom).max(0.0);
+        (x, y, w, h)
+    }
+
     /// Iterate over the direct children of a node.
     pub fn children(&self, parent: NodeId) -> ChildrenIter<'_> {
         ChildrenIter {
@@ -368,12 +436,12 @@ impl Arena {
         let clone = self.new_node(data);
 
         // If it's an element with template_contents, clone those too
-        if let NodeData::Element(ref clone_data) = self.nodes[clone].data {
-            if let Some(template_contents) = clone_data.template_contents {
-                let cloned_contents = self.deep_clone(template_contents);
-                if let NodeData::Element(ref mut cd) = self.nodes[clone].data {
-                    cd.template_contents = Some(cloned_contents);
-                }
+        if let NodeData::Element(ref clone_data) = self.nodes[clone].data
+            && let Some(template_contents) = clone_data.template_contents
+        {
+            let cloned_contents = self.deep_clone(template_contents);
+            if let NodeData::Element(ref mut cd) = self.nodes[clone].data {
+                cd.template_contents = Some(cloned_contents);
             }
         }
 
@@ -399,10 +467,10 @@ impl Arena {
     pub fn ancestor_element(&self, node: NodeId, local_name: &str) -> Option<NodeId> {
         let mut current = self.nodes[node].parent;
         while let Some(id) = current {
-            if let NodeData::Element(data) = &self.nodes[id].data {
-                if &*data.name.local == local_name {
-                    return Some(id);
-                }
+            if let NodeData::Element(data) = &self.nodes[id].data
+                && &*data.name.local == local_name
+            {
+                return Some(id);
             }
             current = self.nodes[id].parent;
         }
@@ -411,10 +479,10 @@ impl Arena {
 
     /// Find the first element with the given local tag name in a depth-first walk.
     pub fn find_element(&self, root: NodeId, local_name: &str) -> Option<NodeId> {
-        if let NodeData::Element(data) = &self.nodes[root].data {
-            if &*data.name.local == local_name {
-                return Some(root);
-            }
+        if let NodeData::Element(data) = &self.nodes[root].data
+            && &*data.name.local == local_name
+        {
+            return Some(root);
         }
         for child in self.children(root) {
             if let Some(found) = self.find_element(child, local_name) {
@@ -511,10 +579,10 @@ impl Arena {
         }
 
         // Step 3: If child is non-null, it must be a child of parent.
-        if let Some(child_id) = child {
-            if self.nodes[child_id].parent != Some(parent) {
-                return Err(DomValidationError::NotFound);
-            }
+        if let Some(child_id) = child
+            && self.nodes[child_id].parent != Some(parent)
+        {
+            return Err(DomValidationError::NotFound);
         }
 
         // Step 4+5: node type restrictions.
@@ -549,10 +617,10 @@ impl Arena {
                         return Err(DomValidationError::HierarchyRequest);
                     }
                     // If child is non-null and a doctype follows child, reject.
-                    if let Some(child_id) = child {
-                        if self.doctype_following_or_is(child_id) {
-                            return Err(DomValidationError::HierarchyRequest);
-                        }
+                    if let Some(child_id) = child
+                        && self.doctype_following_or_is(child_id)
+                    {
+                        return Err(DomValidationError::HierarchyRequest);
                     }
                 }
                 NodeData::Doctype { .. } => {
@@ -630,10 +698,10 @@ impl Arena {
                         return Err(DomValidationError::HierarchyRequest);
                     }
                     // No doctype may follow child.
-                    if let Some(next) = self.nodes[child].next_sibling {
-                        if self.doctype_following_or_is(next) {
-                            return Err(DomValidationError::HierarchyRequest);
-                        }
+                    if let Some(next) = self.nodes[child].next_sibling
+                        && self.doctype_following_or_is(next)
+                    {
+                        return Err(DomValidationError::HierarchyRequest);
                     }
                 }
                 NodeData::Doctype { .. } => {

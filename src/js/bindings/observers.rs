@@ -317,7 +317,7 @@ pub fn drain_intersection_observers(scope: &mut v8::HandleScope) -> Vec<String> 
             entries.set_index(scope, i as u32, entry.into());
         }
         log::debug!(
-            "IntersectionObserver callback: {} entries (all isIntersecting=true)",
+            "IntersectionObserver callback: {} entries (real layout geometry)",
             targets.len(),
         );
 
@@ -342,39 +342,80 @@ pub fn drain_intersection_observers(scope: &mut v8::HandleScope) -> Vec<String> 
     errors
 }
 
-/// Build a single IntersectionObserverEntry object for a target node.
-/// Reports the element as fully visible (SSR assumption: everything is in viewport).
+/// Build a single IntersectionObserverEntry for a target node.
+/// Uses real layout data from Taffy to compute bounding rect and intersection.
 fn build_io_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
+    let arena = crate::js::templates::arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let (abs_x, abs_y) = arena.absolute_position(node_id);
+
+    let bounding_x = abs_x as f64;
+    let bounding_y = abs_y as f64;
+    let bounding_w = layout.size.width as f64;
+    let bounding_h = layout.size.height as f64;
+
+    // Viewport is 0,0 → 1920,1080
+    const VP_W: f64 = 1920.0;
+    const VP_H: f64 = 1080.0;
+
+    // Intersection = clip bounding rect against viewport
+    let ix = bounding_x.max(0.0);
+    let iy = bounding_y.max(0.0);
+    let ix2 = (bounding_x + bounding_w).min(VP_W);
+    let iy2 = (bounding_y + bounding_h).min(VP_H);
+    let iw = (ix2 - ix).max(0.0);
+    let ih = (iy2 - iy).max(0.0);
+
+    let bounding_area = bounding_w * bounding_h;
+    let intersection_area = iw * ih;
+    let ratio = if bounding_area > 0.0 {
+        (intersection_area / bounding_area).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let is_intersecting = intersection_area > 0.0;
+
+    log::trace!(
+        "IO entry {:?}: bounding=({:.0},{:.0} {:.0}x{:.0}) intersecting={} ratio={:.2}",
+        node_id, bounding_x, bounding_y, bounding_w, bounding_h, is_intersecting, ratio
+    );
+
     let entry = v8::Object::new(scope);
 
-    // target — the observed DOM element
+    // target
     let target = crate::js::templates::wrap_node(scope, node_id);
     let k = v8::String::new(scope, "target").unwrap();
     entry.set(scope, k.into(), target.into());
 
-    // isIntersecting: true (fully visible)
+    // isIntersecting
     let k = v8::String::new(scope, "isIntersecting").unwrap();
-    let v = v8::Boolean::new(scope, true);
+    let v = v8::Boolean::new(scope, is_intersecting);
     entry.set(scope, k.into(), v.into());
 
-    // intersectionRatio: 1.0
+    // intersectionRatio
     let k = v8::String::new(scope, "intersectionRatio").unwrap();
-    let v = v8::Number::new(scope, 1.0);
+    let v = v8::Number::new(scope, ratio);
     entry.set(scope, k.into(), v.into());
 
-    // time: 0
+    // time
     let k = v8::String::new(scope, "time").unwrap();
     let v = v8::Number::new(scope, 0.0);
     entry.set(scope, k.into(), v.into());
 
-    // DOMRectReadOnly stubs for bounding rects (1920x1080 viewport)
-    let viewport_rect = make_dom_rect(scope, 0.0, 0.0, 1920.0, 1080.0);
+    // boundingClientRect — real element bounds
+    let bounding_rect = make_dom_rect(scope, bounding_x, bounding_y, bounding_w, bounding_h);
     let k = v8::String::new(scope, "boundingClientRect").unwrap();
-    entry.set(scope, k.into(), viewport_rect.into());
+    entry.set(scope, k.into(), bounding_rect.into());
+
+    // intersectionRect — clipped against viewport
+    let intersection_rect = make_dom_rect(scope, ix, iy, iw, ih);
     let k = v8::String::new(scope, "intersectionRect").unwrap();
-    entry.set(scope, k.into(), viewport_rect.into());
+    entry.set(scope, k.into(), intersection_rect.into());
+
+    // rootBounds — viewport
+    let root_bounds = make_dom_rect(scope, 0.0, 0.0, VP_W, VP_H);
     let k = v8::String::new(scope, "rootBounds").unwrap();
-    entry.set(scope, k.into(), viewport_rect.into());
+    entry.set(scope, k.into(), root_bounds.into());
 
     entry
 }
@@ -646,7 +687,7 @@ pub fn drain_resize_observers(scope: &mut v8::HandleScope) -> Vec<String> {
             let entry = build_ro_entry(scope, *node_id);
             entries.set_index(scope, i as u32, entry.into());
         }
-        log::debug!("ResizeObserver callback: {} entries (1920x1080)", targets.len());
+        log::debug!("ResizeObserver callback: {} entries (real layout geometry)", targets.len());
 
         let try_catch = &mut v8::TryCatch::new(scope);
         let undefined = v8::undefined(try_catch);
@@ -669,58 +710,76 @@ pub fn drain_resize_observers(scope: &mut v8::HandleScope) -> Vec<String> {
 }
 
 /// Build a single ResizeObserverEntry for a target node.
+/// Uses real layout data from Taffy for content/border box dimensions.
 fn build_ro_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
+    let arena = crate::js::templates::arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+
+    // Border box = full element size
+    let border_w = layout.size.width as f64;
+    let border_h = layout.size.height as f64;
+
+    // Content box = size minus padding and border
+    let content_x = (layout.padding.left + layout.border.left) as f64;
+    let content_y = (layout.padding.top + layout.border.top) as f64;
+    let content_w = (border_w - content_x - (layout.padding.right + layout.border.right) as f64).max(0.0);
+    let content_h = (border_h - content_y - (layout.padding.bottom + layout.border.bottom) as f64).max(0.0);
+
+    log::trace!(
+        "RO entry {:?}: border={:.0}x{:.0} content={:.0}x{:.0}",
+        node_id, border_w, border_h, content_w, content_h
+    );
+
     let entry = v8::Object::new(scope);
 
+    // target
     let target = crate::js::templates::wrap_node(scope, node_id);
     let k = v8::String::new(scope, "target").unwrap();
     entry.set(scope, k.into(), target.into());
 
-    // contentRect (DOMRectReadOnly)
-    let rect = make_dom_rect(scope, 0.0, 0.0, 1920.0, 1080.0);
+    // contentRect (DOMRectReadOnly) — content box relative to padding edge
+    let rect = make_dom_rect(scope, content_x, content_y, content_w, content_h);
     let k = v8::String::new(scope, "contentRect").unwrap();
     entry.set(scope, k.into(), rect.into());
 
     // contentBoxSize array with one ResizeObserverSize
-    let size = v8::Object::new(scope);
-    let k = v8::String::new(scope, "inlineSize").unwrap();
-    let v = v8::Number::new(scope, 1920.0);
-    size.set(scope, k.into(), v.into());
-    let k = v8::String::new(scope, "blockSize").unwrap();
-    let v = v8::Number::new(scope, 1080.0);
-    size.set(scope, k.into(), v.into());
+    let content_size = make_ro_size(scope, content_w, content_h);
     let arr = v8::Array::new(scope, 1);
-    arr.set_index(scope, 0, size.into());
+    arr.set_index(scope, 0, content_size.into());
     let k = v8::String::new(scope, "contentBoxSize").unwrap();
     entry.set(scope, k.into(), arr.into());
 
     // borderBoxSize array
-    let size2 = v8::Object::new(scope);
-    let k = v8::String::new(scope, "inlineSize").unwrap();
-    let v = v8::Number::new(scope, 1920.0);
-    size2.set(scope, k.into(), v.into());
-    let k = v8::String::new(scope, "blockSize").unwrap();
-    let v = v8::Number::new(scope, 1080.0);
-    size2.set(scope, k.into(), v.into());
+    let border_size = make_ro_size(scope, border_w, border_h);
     let arr2 = v8::Array::new(scope, 1);
-    arr2.set_index(scope, 0, size2.into());
+    arr2.set_index(scope, 0, border_size.into());
     let k = v8::String::new(scope, "borderBoxSize").unwrap();
     entry.set(scope, k.into(), arr2.into());
 
-    // devicePixelContentBoxSize
-    let size3 = v8::Object::new(scope);
-    let k = v8::String::new(scope, "inlineSize").unwrap();
-    let v = v8::Number::new(scope, 1920.0);
-    size3.set(scope, k.into(), v.into());
-    let k = v8::String::new(scope, "blockSize").unwrap();
-    let v = v8::Number::new(scope, 1080.0);
-    size3.set(scope, k.into(), v.into());
+    // devicePixelContentBoxSize (same as content at 1x DPR)
+    let device_size = make_ro_size(scope, content_w, content_h);
     let arr3 = v8::Array::new(scope, 1);
-    arr3.set_index(scope, 0, size3.into());
+    arr3.set_index(scope, 0, device_size.into());
     let k = v8::String::new(scope, "devicePixelContentBoxSize").unwrap();
     entry.set(scope, k.into(), arr3.into());
 
     entry
+}
+
+/// Create a ResizeObserverSize object with inlineSize and blockSize.
+fn make_ro_size<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    inline_size: f64,
+    block_size: f64,
+) -> v8::Local<'s, v8::Object> {
+    let size = v8::Object::new(scope);
+    let k = v8::String::new(scope, "inlineSize").unwrap();
+    let v = v8::Number::new(scope, inline_size);
+    size.set(scope, k.into(), v.into());
+    let k = v8::String::new(scope, "blockSize").unwrap();
+    let v = v8::Number::new(scope, block_size);
+    size.set(scope, k.into(), v.into());
+    size
 }
 
 fn resize_observer_constructor(

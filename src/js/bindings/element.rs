@@ -15,6 +15,8 @@ use super::element_geometry::{
     get_client_rects, get_attribute_names, has_attributes, toggle_attribute,
     get_attribute_node, attach_shadow, element_animate, element_get_animations,
     element_after, element_before, element_replace_with,
+    offset_width_getter, offset_height_getter, client_width_getter, client_height_getter,
+    scroll_width_getter, scroll_height_getter, offset_top_getter, offset_left_getter,
 };
 
 pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
@@ -103,11 +105,17 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
     set_accessor(scope, proto, "dataset", dataset_getter);
 
     // Geometry stubs (all return 0)
-    for name in &[
-        "offsetWidth", "offsetHeight", "scrollWidth", "scrollHeight",
-        "clientWidth", "clientHeight", "offsetTop", "offsetLeft",
-        "scrollTop", "scrollLeft", "offsetParent",
-    ] {
+    // Geometry accessors — read from Taffy layout data
+    set_accessor(scope, proto, "offsetWidth", offset_width_getter);
+    set_accessor(scope, proto, "offsetHeight", offset_height_getter);
+    set_accessor(scope, proto, "clientWidth", client_width_getter);
+    set_accessor(scope, proto, "clientHeight", client_height_getter);
+    set_accessor(scope, proto, "scrollWidth", scroll_width_getter);
+    set_accessor(scope, proto, "scrollHeight", scroll_height_getter);
+    set_accessor(scope, proto, "offsetTop", offset_top_getter);
+    set_accessor(scope, proto, "offsetLeft", offset_left_getter);
+    // scrollTop/Left remain zero (no scroll state in SSR)
+    for name in &["scrollTop", "scrollLeft", "offsetParent"] {
         set_accessor(scope, proto, name, geometry_zero_getter);
     }
 }

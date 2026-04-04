@@ -58,7 +58,7 @@
     fn test_cache_post_not_cached() {
         let mut cache = HttpCache::new();
         let url = Url::parse("https://example.com/resource").unwrap();
-        let mut req = Request::fetch_api(url, Method::POST);
+        let req = Request::fetch_api(url, Method::POST);
         let resp = make_response(200, vec![("cache-control", "max-age=3600")], "post-response");
         cache.store(&req, &resp);
         assert_eq!(cache.len(), 0);

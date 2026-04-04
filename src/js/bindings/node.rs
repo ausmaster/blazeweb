@@ -377,7 +377,7 @@ fn child_nodes_item_fn(
     mut rv: v8::ReturnValue,
 ) {
     // `this` is the proxy — get the target's nodeId
-    let this = args.this();
+    let _this = args.this();
     // For item(), we need the parent node_id. Traverse from this proxy's target.
     // Since `this` is the proxy, we need another way. Store parent id externally.
     // Simplest: walk from the proxy receiver. Actually for item(), we can look at caller context.

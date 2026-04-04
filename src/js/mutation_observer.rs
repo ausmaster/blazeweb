@@ -47,7 +47,7 @@ pub struct ObserverOptions {
 }
 
 #[derive(Clone)]
-struct MutationRecordData {
+pub(crate) struct MutationRecordData {
     mutation_type: &'static str,
     target: NodeId,
     added_nodes: Vec<NodeId>,

@@ -77,5 +77,10 @@ bdo[dir="rtl"] { direction: rtl; unicode-bidi: bidi-override; }
 /* Body default margin */
 body { margin: 8px; }
 
-/* HTML root */
-html { display: block; }
+/* HTML root — default font per WHATWG rendering spec §15.3.1 */
+html {
+    display: block;
+    font-family: serif;
+    font-size: 16px;
+    line-height: normal;
+}

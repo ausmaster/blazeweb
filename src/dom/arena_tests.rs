@@ -830,3 +830,142 @@
         assert!(matches!(arena.nodes[clone].data, NodeData::DocumentFragment));
         assert_eq!(child_vec(&arena, clone).len(), 2);
     }
+
+    // ─── Layout geometry helpers ─────────────────────────────────────
+
+    #[test]
+    fn absolute_position_sums_ancestors() {
+        let mut arena = Arena::new();
+        let html = make_element(&mut arena, "html");
+        let body = make_element(&mut arena, "body");
+        let div = make_element(&mut arena, "div");
+        arena.append_child(arena.document, html);
+        arena.append_child(html, body);
+        arena.append_child(body, div);
+
+        // Set layout positions
+        arena.nodes[html].taffy_layout.location = taffy::Point { x: 0.0, y: 0.0 };
+        arena.nodes[body].taffy_layout.location = taffy::Point { x: 8.0, y: 8.0 };
+        arena.nodes[div].taffy_layout.location = taffy::Point { x: 10.0, y: 20.0 };
+
+        let (x, y) = arena.absolute_position(div);
+        assert_eq!(x, 18.0); // 0 + 8 + 10
+        assert_eq!(y, 28.0); // 0 + 8 + 20
+    }
+
+    #[test]
+    fn bounding_rect_combines_position_and_size() {
+        let mut arena = Arena::new();
+        let div = make_element(&mut arena, "div");
+        arena.append_child(arena.document, div);
+
+        arena.nodes[div].taffy_layout.location = taffy::Point { x: 50.0, y: 100.0 };
+        arena.nodes[div].taffy_layout.size = taffy::Size { width: 200.0, height: 150.0 };
+
+        let (x, y, w, h) = arena.bounding_rect(div);
+        assert_eq!(x, 50.0);
+        assert_eq!(y, 100.0);
+        assert_eq!(w, 200.0);
+        assert_eq!(h, 150.0);
+    }
+
+    #[test]
+    fn content_box_subtracts_padding_and_border() {
+        let mut arena = Arena::new();
+        let div = make_element(&mut arena, "div");
+        arena.append_child(arena.document, div);
+
+        arena.nodes[div].taffy_layout.size = taffy::Size { width: 200.0, height: 100.0 };
+        arena.nodes[div].taffy_layout.padding = taffy::Rect {
+            left: 10.0, right: 10.0, top: 5.0, bottom: 5.0,
+        };
+        arena.nodes[div].taffy_layout.border = taffy::Rect {
+            left: 2.0, right: 2.0, top: 1.0, bottom: 1.0,
+        };
+
+        let (cx, cy, cw, ch) = arena.content_box(div);
+        assert_eq!(cx, 12.0);  // padding.left + border.left
+        assert_eq!(cy, 6.0);   // padding.top + border.top
+        assert_eq!(cw, 176.0); // 200 - 12 - 12
+        assert_eq!(ch, 88.0);  // 100 - 6 - 6
+    }
+
+    #[test]
+    fn content_box_clamps_to_zero() {
+        let mut arena = Arena::new();
+        let div = make_element(&mut arena, "div");
+        arena.append_child(arena.document, div);
+
+        // Element smaller than its padding+border
+        arena.nodes[div].taffy_layout.size = taffy::Size { width: 10.0, height: 10.0 };
+        arena.nodes[div].taffy_layout.padding = taffy::Rect {
+            left: 20.0, right: 20.0, top: 20.0, bottom: 20.0,
+        };
+
+        let (_cx, _cy, cw, ch) = arena.content_box(div);
+        assert_eq!(cw, 0.0);
+        assert_eq!(ch, 0.0);
+    }
+
+    #[test]
+    fn io_intersection_computation() {
+        // Test the intersection math used by IntersectionObserver
+        let mut arena = Arena::new();
+        let html = make_element(&mut arena, "html");
+        arena.append_child(arena.document, html);
+
+        // Element fully in viewport
+        let div_in = make_element(&mut arena, "div");
+        arena.append_child(html, div_in);
+        arena.nodes[div_in].taffy_layout.location = taffy::Point { x: 100.0, y: 100.0 };
+        arena.nodes[div_in].taffy_layout.size = taffy::Size { width: 200.0, height: 150.0 };
+
+        let (bx, by, bw, bh) = arena.bounding_rect(div_in);
+        // Clip against viewport 0,0,1920,1080
+        let ix = bx.max(0.0);
+        let iy = by.max(0.0);
+        let ix2 = (bx + bw).min(1920.0);
+        let iy2 = (by + bh).min(1080.0);
+        let iw = (ix2 - ix).max(0.0);
+        let ih = (iy2 - iy).max(0.0);
+        // Fully visible
+        assert_eq!(iw, 200.0);
+        assert_eq!(ih, 150.0);
+        let ratio = (iw * ih) / (bw * bh);
+        assert_eq!(ratio, 1.0);
+
+        // Element partially outside viewport (extends below)
+        let div_partial = make_element(&mut arena, "div");
+        arena.append_child(html, div_partial);
+        arena.nodes[div_partial].taffy_layout.location = taffy::Point { x: 0.0, y: 1000.0 };
+        arena.nodes[div_partial].taffy_layout.size = taffy::Size { width: 100.0, height: 200.0 };
+
+        let (_bx, by, bw, bh) = arena.bounding_rect(div_partial);
+        let iy2 = (by + bh).min(1080.0);
+        let ih = (iy2 - by.max(0.0)).max(0.0);
+        // Only 80px visible (1080 - 1000)
+        assert_eq!(ih, 80.0);
+        let ratio = (bw * ih) / (bw * bh);
+        assert!((ratio - 0.4).abs() < 0.01, "ratio should be ~0.4, got {}", ratio);
+    }
+
+    #[test]
+    fn ro_content_box_through_full_pipeline() {
+        // Full pipeline: parse → style → layout → read content box
+        let mut arena = crate::dom::parse_document(
+            "<html><head><style>#box { width: 200px; height: 100px; padding: 10px; border: 2px solid black; box-sizing: content-box; }</style></head><body><div id=\"box\"></div></body></html>",
+        );
+        crate::css::resolve::resolve_styles(&mut arena);
+        crate::css::layout::compute_layout(&mut arena);
+
+        let div = arena.find_element(arena.document, "div").unwrap();
+        let layout = &arena.nodes[div].taffy_layout;
+
+        // content-box: total = 200 + 10*2 + 2*2 = 224 wide, 100 + 10*2 + 2*2 = 124 tall
+        assert_eq!(layout.size.width, 224.0);
+        assert_eq!(layout.size.height, 124.0);
+
+        let (_cx, _cy, cw, ch) = arena.content_box(div);
+        assert_eq!(cw, 200.0);
+        assert_eq!(ch, 100.0);
+    }

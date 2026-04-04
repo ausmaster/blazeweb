@@ -1,9 +1,11 @@
 //! Stylo trait bridge — implements TDocument, TNode, TElement for our Arena-based DOM.
 //!
-//! We use a lightweight `StyloNode` wrapper (arena ref + NodeId) that is Copy/Clone,
-//! as required by Stylo's trait bounds. The same type implements all Stylo traits,
-//! with runtime dispatch based on node type (following Blitz's pattern).
+//! Stylo's style sharing cache requires `size_of::<E>() == size_of::<usize>()`.
+//! Since our StyloNode needs both an arena reference and a NodeId, we store the
+//! arena pointer in a thread-local and make StyloNode just a NodeId wrapper.
+//! The thread-local is set before traversal and cleared after.
 
+use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering;
 
@@ -30,48 +32,98 @@ use style_dom::ElementState;
 use crate::dom::arena::{Arena, NodeId};
 use crate::dom::node::NodeData;
 
+// ─── Thread-local arena pointer ──────────────────────────────────────────
+//
+// Stylo's SharingCache requires size_of::<TElement>() == size_of::<usize>(),
+// so StyloNode can only hold a NodeId (8 bytes). The arena pointer is stored
+// in a thread-local, set before traversal and cleared after.
+//
+// We use sequential traversal (no rayon pool) so only one thread ever accesses
+// the TLS during style resolution. Each test thread gets its own TLS naturally.
+
+thread_local! {
+    static ARENA_PTR: Cell<*const Arena> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Set the thread-local arena pointer. Must be called before any StyloNode
+/// methods and cleared after style resolution.
+///
+/// # Safety
+/// The caller must ensure the Arena reference outlives all StyloNode usage.
+pub unsafe fn set_arena(arena: &Arena) {
+    ARENA_PTR.with(|p| p.set(arena as *const Arena));
+}
+
+/// Clear the thread-local arena pointer.
+pub fn clear_arena() {
+    ARENA_PTR.with(|p| p.set(std::ptr::null()));
+}
+
+#[inline]
+fn arena<'a>() -> &'a Arena {
+    ARENA_PTR.with(|p| {
+        let ptr = p.get();
+        assert!(!ptr.is_null(), "ARENA_PTR not set — call set_arena() before style resolution");
+        unsafe { &*ptr }
+    })
+}
+
 // ─── StyloNode wrapper ──────────────────────────────────────────────────────
 
-/// Lightweight handle into our Arena for Stylo's trait system.
+/// Pointer-sized handle into our Arena for Stylo's trait system.
 ///
-/// Copy + Clone + Sized as required by TNode/TElement. Navigation is done via
-/// the Arena reference — no back-pointers needed in Node.
+/// Must be exactly `usize`-sized to satisfy Stylo's `SharingCache` size assertion.
+/// The arena pointer is stored in a thread-local, so this only holds a NodeId.
 #[derive(Copy, Clone)]
-pub struct StyloNode<'a> {
-    pub arena: &'a Arena,
+#[repr(transparent)]
+pub struct StyloNode {
     pub id: NodeId,
 }
 
-impl<'a> StyloNode<'a> {
-    pub fn new(arena: &'a Arena, id: NodeId) -> Self {
-        Self { arena, id }
+// Compile-time size assertion: StyloNode must be usize-sized for Stylo's SharingCache.
+const _: () = assert!(std::mem::size_of::<StyloNode>() == std::mem::size_of::<usize>());
+
+impl StyloNode {
+    pub fn new(id: NodeId) -> Self {
+        Self { id }
+    }
+
+    /// Create a StyloNode and also set the thread-local arena pointer.
+    /// Convenience for the entry point to style resolution.
+    ///
+    /// # Safety
+    /// The caller must ensure the Arena reference outlives all StyloNode usage.
+    pub unsafe fn with_arena(arena: &Arena, id: NodeId) -> Self {
+        // SAFETY: caller guarantees arena outlives all StyloNode usage
+        unsafe { set_arena(arena) };
+        Self { id }
     }
 
     #[inline]
-    fn node(&self) -> &'a crate::dom::arena::Node {
-        &self.arena.nodes[self.id]
+    fn node(&self) -> &crate::dom::arena::Node {
+        &arena().nodes[self.id]
     }
 
-    fn elem_data(&self) -> Option<&'a crate::dom::node::ElementData> {
-        self.arena.element_data(self.id)
+    fn elem_data(&self) -> Option<&crate::dom::node::ElementData> {
+        arena().element_data(self.id)
     }
 }
 
-impl std::fmt::Debug for StyloNode<'_> {
+impl std::fmt::Debug for StyloNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "StyloNode({:?})", self.id)
     }
 }
 
-impl PartialEq for StyloNode<'_> {
+impl PartialEq for StyloNode {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl Eq for StyloNode<'_> {}
+impl Eq for StyloNode {}
 
-impl Hash for StyloNode<'_> {
+impl Hash for StyloNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
     }
@@ -79,7 +131,7 @@ impl Hash for StyloNode<'_> {
 
 // ─── NodeInfo ────────────────────────────────────────────────────────────────
 
-impl NodeInfo for StyloNode<'_> {
+impl NodeInfo for StyloNode {
     fn is_element(&self) -> bool {
         matches!(&self.node().data, NodeData::Element(_))
     }
@@ -91,8 +143,8 @@ impl NodeInfo for StyloNode<'_> {
 
 // ─── TDocument ───────────────────────────────────────────────────────────────
 
-impl<'a> TDocument for StyloNode<'a> {
-    type ConcreteNode = StyloNode<'a>;
+impl TDocument for StyloNode {
+    type ConcreteNode = StyloNode;
 
     fn as_node(&self) -> Self::ConcreteNode {
         *self
@@ -107,14 +159,14 @@ impl<'a> TDocument for StyloNode<'a> {
     }
 
     fn shared_lock(&self) -> &SharedRwLock {
-        &self.arena.guard
+        &arena().guard
     }
 }
 
 // ─── TShadowRoot ─────────────────────────────────────────────────────────────
 
-impl<'a> TShadowRoot for StyloNode<'a> {
-    type ConcreteNode = StyloNode<'a>;
+impl TShadowRoot for StyloNode {
+    type ConcreteNode = StyloNode;
 
     fn as_node(&self) -> Self::ConcreteNode {
         *self
@@ -134,41 +186,33 @@ impl<'a> TShadowRoot for StyloNode<'a> {
 
 // ─── TNode ───────────────────────────────────────────────────────────────────
 
-impl<'a> TNode for StyloNode<'a> {
-    type ConcreteElement = StyloNode<'a>;
-    type ConcreteDocument = StyloNode<'a>;
-    type ConcreteShadowRoot = StyloNode<'a>;
+impl TNode for StyloNode {
+    type ConcreteElement = StyloNode;
+    type ConcreteDocument = StyloNode;
+    type ConcreteShadowRoot = StyloNode;
 
     fn parent_node(&self) -> Option<Self> {
-        self.node().parent.map(|id| StyloNode::new(self.arena, id))
+        self.node().parent.map(StyloNode::new)
     }
 
     fn first_child(&self) -> Option<Self> {
-        self.node()
-            .first_child
-            .map(|id| StyloNode::new(self.arena, id))
+        self.node().first_child.map(StyloNode::new)
     }
 
     fn last_child(&self) -> Option<Self> {
-        self.node()
-            .last_child
-            .map(|id| StyloNode::new(self.arena, id))
+        self.node().last_child.map(StyloNode::new)
     }
 
     fn prev_sibling(&self) -> Option<Self> {
-        self.node()
-            .prev_sibling
-            .map(|id| StyloNode::new(self.arena, id))
+        self.node().prev_sibling.map(StyloNode::new)
     }
 
     fn next_sibling(&self) -> Option<Self> {
-        self.node()
-            .next_sibling
-            .map(|id| StyloNode::new(self.arena, id))
+        self.node().next_sibling.map(StyloNode::new)
     }
 
     fn owner_doc(&self) -> Self::ConcreteDocument {
-        StyloNode::new(self.arena, self.arena.document)
+        StyloNode::new(arena().document)
     }
 
     fn is_in_document(&self) -> bool {
@@ -210,27 +254,25 @@ impl<'a> TNode for StyloNode<'a> {
 
 // ─── Children iterator for TElement::traversal_children ──────────────────────
 
-pub struct StyloChildIter<'a> {
-    arena: &'a Arena,
+pub struct StyloChildIter {
     current: Option<NodeId>,
 }
 
-impl<'a> Iterator for StyloChildIter<'a> {
-    type Item = StyloNode<'a>;
+impl Iterator for StyloChildIter {
+    type Item = StyloNode;
 
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.current?;
-        self.current = self.arena.nodes[id].next_sibling;
-        Some(StyloNode::new(self.arena, id))
+        self.current = arena().nodes[id].next_sibling;
+        Some(StyloNode::new(id))
     }
 }
 
 // ─── AttributeProvider ───────────────────────────────────────────────────────
 
-impl AttributeProvider for StyloNode<'_> {
+impl AttributeProvider for StyloNode {
     fn get_attr(&self, attr: &LocalName) -> Option<String> {
         let elem = self.elem_data()?;
-        // Compare by string value: our markup5ever::LocalName vs style::LocalName (web_atoms)
         let attr_name: &str = attr.as_ref();
         elem.get_attribute(attr_name).map(|s| s.to_string())
     }
@@ -238,12 +280,10 @@ impl AttributeProvider for StyloNode<'_> {
 
 // ─── selectors::Element (Stylo's SelectorImpl) ──────────────────────────────
 
-impl SelectorsElement for StyloNode<'_> {
+impl SelectorsElement for StyloNode {
     type Impl = SelectorImpl;
 
     fn opaque(&self) -> OpaqueElement {
-        // Encode NodeId as a fake non-null pointer (like Blitz).
-        // +1 to avoid null for the first slot.
         let ffi = self.id.data().as_ffi() as usize + 1;
         let non_null = std::ptr::NonNull::new(ffi as *mut ()).unwrap();
         OpaqueElement::from_non_null_ptr(non_null)
@@ -266,34 +306,37 @@ impl SelectorsElement for StyloNode<'_> {
     }
 
     fn prev_sibling_element(&self) -> Option<Self> {
+        let a = arena();
         let mut current = self.node().prev_sibling;
         while let Some(id) = current {
-            if matches!(&self.arena.nodes[id].data, NodeData::Element(_)) {
-                return Some(StyloNode::new(self.arena, id));
+            if matches!(&a.nodes[id].data, NodeData::Element(_)) {
+                return Some(StyloNode::new(id));
             }
-            current = self.arena.nodes[id].prev_sibling;
+            current = a.nodes[id].prev_sibling;
         }
         None
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
+        let a = arena();
         let mut current = self.node().next_sibling;
         while let Some(id) = current {
-            if matches!(&self.arena.nodes[id].data, NodeData::Element(_)) {
-                return Some(StyloNode::new(self.arena, id));
+            if matches!(&a.nodes[id].data, NodeData::Element(_)) {
+                return Some(StyloNode::new(id));
             }
-            current = self.arena.nodes[id].next_sibling;
+            current = a.nodes[id].next_sibling;
         }
         None
     }
 
     fn first_element_child(&self) -> Option<Self> {
+        let a = arena();
         let mut current = self.node().first_child;
         while let Some(id) = current {
-            if matches!(&self.arena.nodes[id].data, NodeData::Element(_)) {
-                return Some(StyloNode::new(self.arena, id));
+            if matches!(&a.nodes[id].data, NodeData::Element(_)) {
+                return Some(StyloNode::new(id));
             }
-            current = self.arena.nodes[id].next_sibling;
+            current = a.nodes[id].next_sibling;
         }
         None
     }
@@ -306,13 +349,13 @@ impl SelectorsElement for StyloNode<'_> {
 
     fn has_local_name(&self, local_name: &web_atoms::LocalName) -> bool {
         self.elem_data()
-            .map(|d| &*d.name.local == &**local_name)
+            .map(|d| *d.name.local == **local_name)
             .unwrap_or(false)
     }
 
     fn has_namespace(&self, ns: &web_atoms::Namespace) -> bool {
         self.elem_data()
-            .map(|d| &*d.name.ns == &**ns)
+            .map(|d| *d.name.ns == **ns)
             .unwrap_or(false)
     }
 
@@ -336,7 +379,6 @@ impl SelectorsElement for StyloNode<'_> {
         };
         let local_str: &str = local_name.as_ref();
         for attr in &data.attrs {
-            // Check namespace constraint
             match ns {
                 NamespaceConstraint::Any => {}
                 NamespaceConstraint::Specific(ns_url) => {
@@ -350,11 +392,9 @@ impl SelectorsElement for StyloNode<'_> {
                     }
                 }
             }
-            // Check local name
             if &*attr.name.local != local_str {
                 continue;
             }
-            // Check operation
             let value = &*attr.value;
             let matches = match operation {
                 AttrSelectorOperation::Exists => true,
@@ -430,7 +470,6 @@ impl SelectorsElement for StyloNode<'_> {
             NonTSPseudoClass::Checked => state.contains(ElementState::CHECKED),
             NonTSPseudoClass::Visited => state.contains(ElementState::VISITED),
             NonTSPseudoClass::Link => {
-                // :link matches unvisited links
                 self.elem_data()
                     .map(|d| {
                         let tag = &*d.name.local;
@@ -446,12 +485,10 @@ impl SelectorsElement for StyloNode<'_> {
                 })
                 .unwrap_or(false),
             NonTSPseudoClass::Defined => {
-                // All standard HTML elements are :defined
                 self.elem_data()
                     .map(|d| d.name.ns == markup5ever::ns!(html))
                     .unwrap_or(false)
             }
-            // For SSR, most interactive pseudo-classes return false
             _ => false,
         }
     }
@@ -465,6 +502,7 @@ impl SelectorsElement for StyloNode<'_> {
     }
 
     fn apply_selector_flags(&self, flags: ElementSelectorFlags) {
+        let a = arena();
         let self_flags = flags.for_self();
         if !self_flags.is_empty() {
             let node = self.node();
@@ -472,13 +510,13 @@ impl SelectorsElement for StyloNode<'_> {
                 .set(node.selector_flags.get() | self_flags);
         }
         let parent_flags = flags.for_parent();
-        if !parent_flags.is_empty() {
-            if let Some(parent_id) = self.node().parent {
-                let parent = &self.arena.nodes[parent_id];
-                parent
-                    .selector_flags
-                    .set(parent.selector_flags.get() | parent_flags);
-            }
+        if !parent_flags.is_empty()
+            && let Some(parent_id) = self.node().parent
+        {
+            let parent = &a.nodes[parent_id];
+            parent
+                .selector_flags
+                .set(parent.selector_flags.get() | parent_flags);
         }
     }
 
@@ -556,37 +594,36 @@ impl SelectorsElement for StyloNode<'_> {
     }
 
     fn is_empty(&self) -> bool {
+        let a = arena();
         let mut child = self.node().first_child;
         while let Some(id) = child {
-            match &self.arena.nodes[id].data {
+            match &a.nodes[id].data {
                 NodeData::Element(_) => return false,
                 NodeData::Text(t) if !t.is_empty() => return false,
                 _ => {}
             }
-            child = self.arena.nodes[id].next_sibling;
+            child = a.nodes[id].next_sibling;
         }
         true
     }
 
     fn is_root(&self) -> bool {
-        // Root element's parent is the Document node.
         self.node()
             .parent
-            .map(|pid| matches!(&self.arena.nodes[pid].data, NodeData::Document))
+            .map(|pid| matches!(&arena().nodes[pid].data, NodeData::Document))
             .unwrap_or(false)
     }
 
     fn add_element_unique_hashes(&self, _filter: &mut selectors::bloom::BloomFilter) -> bool {
-        // Skip bloom filter optimization for now.
         false
     }
 }
 
 // ─── TElement ────────────────────────────────────────────────────────────────
 
-impl<'a> TElement for StyloNode<'a> {
-    type ConcreteNode = StyloNode<'a>;
-    type TraversalChildrenIterator = StyloChildIter<'a>;
+impl TElement for StyloNode {
+    type ConcreteNode = StyloNode;
+    type TraversalChildrenIterator = StyloChildIter;
 
     fn as_node(&self) -> Self::ConcreteNode {
         *self
@@ -594,7 +631,6 @@ impl<'a> TElement for StyloNode<'a> {
 
     fn traversal_children(&self) -> LayoutIterator<Self::TraversalChildrenIterator> {
         LayoutIterator(StyloChildIter {
-            arena: self.arena,
             current: self.node().first_child,
         })
     }
@@ -618,9 +654,10 @@ impl<'a> TElement for StyloNode<'a> {
     }
 
     fn style_attribute(&self) -> Option<ArcBorrow<'_, Locked<PropertyDeclarationBlock>>> {
-        // TODO: Parse inline style="" attributes into PropertyDeclarationBlock.
-        // For now, return None (no inline style support).
-        None
+        self.node()
+            .parsed_style_attribute
+            .as_ref()
+            .map(|arc| arc.borrow_arc())
     }
 
     fn state(&self) -> ElementState {
@@ -636,11 +673,7 @@ impl<'a> TElement for StyloNode<'a> {
     }
 
     fn id(&self) -> Option<&Atom> {
-        // TODO: Cache the interned atom on the element.
-        // For now, we cannot return a reference to a temporary Atom.
-        // This means ID-based selectors won't work through Stylo's fast path,
-        // but they'll still work through the selectors::Element::has_id path.
-        None
+        self.node().cached_atom_id.as_ref()
     }
 
     fn each_class<F>(&self, mut callback: F)
@@ -679,25 +712,25 @@ impl<'a> TElement for StyloNode<'a> {
     }
 
     fn has_snapshot(&self) -> bool {
-        false // No snapshot support for SSR
+        false
     }
 
     fn handled_snapshot(&self) -> bool {
-        true // Always "handled" since we never create snapshots
+        true
     }
 
     unsafe fn set_handled_snapshot(&self) {}
 
     unsafe fn set_dirty_descendants(&self) {
+        let a = arena();
         self.node()
             .dirty_descendants
             .store(true, Ordering::Relaxed);
-        // Walk up ancestors, setting dirty_descendants on each
         let mut current = self.node().parent;
         while let Some(id) = current {
-            let node = &self.arena.nodes[id];
+            let node = &a.nodes[id];
             if node.dirty_descendants.load(Ordering::Relaxed) {
-                break; // Already dirty, ancestors must be too
+                break;
             }
             node.dirty_descendants.store(true, Ordering::Relaxed);
             current = node.parent;
@@ -710,9 +743,7 @@ impl<'a> TElement for StyloNode<'a> {
             .store(false, Ordering::Relaxed);
     }
 
-    fn store_children_to_process(&self, _n: isize) {
-        // Bottom-up traversal not used (needs_postorder_traversal is false)
-    }
+    fn store_children_to_process(&self, _n: isize) {}
 
     fn did_process_child(&self) -> isize {
         0
@@ -757,7 +788,7 @@ impl<'a> TElement for StyloNode<'a> {
     }
 
     fn may_have_animations(&self) -> bool {
-        false // No CSS animations in SSR
+        false
     }
 
     fn has_animations(&self, _context: &SharedStyleContext) -> bool {
@@ -805,29 +836,25 @@ impl<'a> TElement for StyloNode<'a> {
     fn local_name(
         &self,
     ) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedLocalName {
-        // SAFETY: We return a reference with the element's lifetime. The web_atoms::LocalName
-        // is a string_cache::Atom which is interned and has 'static lifetime.
-        // We leak a box here per element, which is acceptable for SSR (short-lived arena).
-        // TODO: Cache this on the node to avoid repeated allocation.
-        let name = self.elem_data().map(|d| &*d.name.local).unwrap_or("");
-        let atom = web_atoms::LocalName::from(name);
-        // Leak a box to extend lifetime. Fine for SSR render lifetime.
-        Box::leak(Box::new(atom))
+        self.node()
+            .cached_atom_local_name
+            .as_ref()
+            .expect("cached_atom_local_name not set — prepare_for_stylo() must run before style resolution")
     }
 
     fn namespace(
         &self,
     ) -> &<SelectorImpl as selectors::SelectorImpl>::BorrowedNamespaceUrl {
-        let ns = self.elem_data().map(|d| &*d.name.ns).unwrap_or("");
-        let atom = web_atoms::Namespace::from(ns);
-        Box::leak(Box::new(atom))
+        self.node()
+            .cached_atom_namespace
+            .as_ref()
+            .expect("cached_atom_namespace not set — prepare_for_stylo() must run before style resolution")
     }
 
     fn query_container_size(
         &self,
         _display: &style::values::computed::Display,
     ) -> euclid::default::Size2D<Option<app_units::Au>> {
-        // No container queries support yet — return empty sizes.
         euclid::default::Size2D::new(None, None)
     }
 
@@ -859,9 +886,8 @@ impl<'a> TElement for StyloNode<'a> {
         if !is_body {
             return false;
         }
-        // Check if parent is the <html> root element
         if let Some(parent_id) = self.node().parent {
-            let parent = StyloNode::new(self.arena, parent_id);
+            let parent = StyloNode::new(parent_id);
             return parent.is_root();
         }
         false
@@ -877,16 +903,18 @@ impl<'a> TElement for StyloNode<'a> {
         let Some(data) = self.elem_data() else {
             return;
         };
+        let a = arena();
         let tag = &*data.name.local;
 
-        // Handle `hidden` attribute → display: none
+        // hidden → display: none
         if data.get_attribute("hidden").is_some() {
+            log::trace!("Presentational hint: hidden attr on <{}>", tag);
             use style::properties::{Importance, PropertyDeclaration};
             use style::rule_tree::CascadeLevel;
             use style::stylesheets::layer_rule::LayerOrder;
             use style::values::specified::Display;
             hints.push(ApplicableDeclarationBlock::from_declarations(
-                Arc::new(self.arena.guard.wrap(PropertyDeclarationBlock::with_one(
+                Arc::new(a.guard.wrap(PropertyDeclarationBlock::with_one(
                     PropertyDeclaration::Display(Display::None),
                     Importance::Normal,
                 ))),
@@ -895,69 +923,73 @@ impl<'a> TElement for StyloNode<'a> {
             ));
         }
 
-        // Handle width/height on elements that support them
         if matches!(
             tag,
             "img" | "canvas" | "video" | "table" | "td" | "th" | "col" | "colgroup"
                 | "iframe" | "embed" | "object" | "input"
         ) {
-            if let Some(width_val) = data.get_attribute("width") {
-                if let Some(lp) = parse_size_attr(width_val) {
-                    use style::properties::{Importance, PropertyDeclaration};
-                    use style::rule_tree::CascadeLevel;
-                    use style::stylesheets::layer_rule::LayerOrder;
-                    use style::values::specified::Size;
-                    use style::values::generics::NonNegative;
-                    hints.push(ApplicableDeclarationBlock::from_declarations(
-                        Arc::new(self.arena.guard.wrap(PropertyDeclarationBlock::with_one(
-                            PropertyDeclaration::Width(Size::LengthPercentage(NonNegative(lp))),
-                            Importance::Normal,
-                        ))),
-                        CascadeLevel::PresHints,
-                        LayerOrder::root(),
-                    ));
-                }
+            if let Some(width_val) = data.get_attribute("width")
+                && let Some(lp) = parse_size_attr(width_val)
+            {
+                use style::properties::{Importance, PropertyDeclaration};
+                use style::rule_tree::CascadeLevel;
+                use style::stylesheets::layer_rule::LayerOrder;
+                use style::values::specified::Size;
+                use style::values::generics::NonNegative;
+                hints.push(ApplicableDeclarationBlock::from_declarations(
+                    Arc::new(a.guard.wrap(PropertyDeclarationBlock::with_one(
+                        PropertyDeclaration::Width(Size::LengthPercentage(NonNegative(lp))),
+                        Importance::Normal,
+                    ))),
+                    CascadeLevel::PresHints,
+                    LayerOrder::root(),
+                ));
             }
-            if let Some(height_val) = data.get_attribute("height") {
-                if let Some(lp) = parse_size_attr(height_val) {
-                    use style::properties::{Importance, PropertyDeclaration};
-                    use style::rule_tree::CascadeLevel;
-                    use style::stylesheets::layer_rule::LayerOrder;
-                    use style::values::specified::Size;
-                    use style::values::generics::NonNegative;
-                    hints.push(ApplicableDeclarationBlock::from_declarations(
-                        Arc::new(self.arena.guard.wrap(PropertyDeclarationBlock::with_one(
-                            PropertyDeclaration::Height(Size::LengthPercentage(NonNegative(lp))),
-                            Importance::Normal,
-                        ))),
-                        CascadeLevel::PresHints,
-                        LayerOrder::root(),
-                    ));
-                }
+            if let Some(height_val) = data.get_attribute("height")
+                && let Some(lp) = parse_size_attr(height_val)
+            {
+                use style::properties::{Importance, PropertyDeclaration};
+                use style::rule_tree::CascadeLevel;
+                use style::stylesheets::layer_rule::LayerOrder;
+                use style::values::specified::Size;
+                use style::values::generics::NonNegative;
+                hints.push(ApplicableDeclarationBlock::from_declarations(
+                    Arc::new(a.guard.wrap(PropertyDeclarationBlock::with_one(
+                        PropertyDeclaration::Height(Size::LengthPercentage(NonNegative(lp))),
+                        Importance::Normal,
+                    ))),
+                    CascadeLevel::PresHints,
+                    LayerOrder::root(),
+                ));
             }
         }
     }
 }
 
 /// Parse an HTML size attribute value (e.g. "100", "50%", "100px") into a LengthPercentage.
-fn parse_size_attr(
+pub(crate) fn parse_size_attr(
     value: &str,
 ) -> Option<style::values::specified::LengthPercentage> {
     use style::values::specified::{AbsoluteLength, LengthPercentage, NoCalcLength};
 
     if let Some(pct) = value.strip_suffix('%') {
         let val: f32 = pct.parse().ok()?;
+        if val < 0.0 {
+            return None;
+        }
         return Some(LengthPercentage::Percentage(
             style::values::computed::Percentage(val / 100.0),
         ));
     }
     if let Some(px) = value.strip_suffix("px") {
         let val: f32 = px.parse().ok()?;
+        if val < 0.0 {
+            return None;
+        }
         return Some(LengthPercentage::Length(NoCalcLength::Absolute(
             AbsoluteLength::Px(val),
         )));
     }
-    // Plain number → pixels
     let val: f32 = value.parse().ok()?;
     if val >= 0.0 {
         Some(LengthPercentage::Length(NoCalcLength::Absolute(
@@ -967,3 +999,7 @@ fn parse_size_attr(
         None
     }
 }
+
+#[cfg(test)]
+#[path = "stylo_bridge_tests.rs"]
+mod tests;

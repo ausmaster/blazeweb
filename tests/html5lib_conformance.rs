@@ -211,6 +211,12 @@ fn dump_tree(arena: &_blazeweb::dom::Arena, node_id: _blazeweb::dom::NodeId, ind
         NodeData::Comment(text) => {
             output.push_str(&format!("{prefix}<!-- {text} -->\n"));
         }
+        NodeData::DocumentFragment => {
+            // Recurse into fragment children
+            for child in arena.children(node_id) {
+                dump_tree(arena, child, indent, output);
+            }
+        }
     }
 }
 

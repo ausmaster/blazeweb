@@ -311,24 +311,6 @@ fn tw_accept_node(
     Some(result)
 }
 
-/// Depth-first next node (first child, then next sibling, then uncle, etc.)
-fn depth_first_next(arena: &Arena, node: NodeId) -> Option<NodeId> {
-    if let Some(fc) = arena.nodes[node].first_child {
-        return Some(fc);
-    }
-    if let Some(ns) = arena.nodes[node].next_sibling {
-        return Some(ns);
-    }
-    let mut current = arena.nodes[node].parent;
-    while let Some(pid) = current {
-        if let Some(ns) = arena.nodes[pid].next_sibling {
-            return Some(ns);
-        }
-        current = arena.nodes[pid].parent;
-    }
-    None
-}
-
 /// First following node not following root — for nextNode().
 fn first_following_not_following_root(arena: &Arena, node: NodeId, root: NodeId) -> Option<NodeId> {
     if let Some(ns) = arena.nodes[node].next_sibling {
@@ -350,15 +332,6 @@ fn first_following_not_following_root(arena: &Arena, node: NodeId, root: NodeId)
     }
 }
 
-/// Check if `node` is an inclusive descendant of `ancestor`.
-pub(super) fn is_descendant_of(arena: &Arena, node: NodeId, ancestor: NodeId) -> bool {
-    let mut current = Some(node);
-    while let Some(id) = current {
-        if id == ancestor { return true; }
-        current = arena.nodes[id].parent;
-    }
-    false
-}
 
 pub(super) fn create_tree_walker(
     scope: &mut v8::HandleScope,

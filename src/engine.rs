@@ -89,9 +89,12 @@ fn render_inner(
     let js_errors = js::runtime::execute_scripts(&mut arena, base_url, context)?;
 
     // Step 3: Resolve CSS styles via Stylo (after scripts may have mutated DOM)
-    crate::css::resolve::resolve_styles(&arena);
+    crate::css::resolve::resolve_styles(&mut arena);
 
-    // Step 4: Serialize back to HTML
+    // Step 4: Compute box layout via Taffy (positions + sizes for geometry APIs)
+    crate::css::layout::compute_layout(&mut arena);
+
+    // Step 5: Serialize back to HTML
     let ser_start = std::time::Instant::now();
     let output = dom::serialize(&arena);
     log::debug!("[{}] serialized {} bytes in {:?}", url_label, output.len(), ser_start.elapsed());

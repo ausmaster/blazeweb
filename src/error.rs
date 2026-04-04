@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)] // All variants defined for completeness
 pub enum EngineError {
     #[error("parse error: {0}")]
     Parse(String),

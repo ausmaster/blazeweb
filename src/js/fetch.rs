@@ -10,7 +10,7 @@ use reqwest::header::HeaderValue;
 use reqwest::Method;
 
 use crate::js::bindings::location::BaseUrl;
-use crate::net::fetch::{resolve_url, FetchContext, RT};
+use crate::net::fetch::{resolve_url, FetchContext};
 use crate::net::request::Request;
 use crate::net::response::Response;
 

@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
+#[cfg(test)]
+use reqwest::header::HeaderValue;
 use reqwest::{Method, Url};
 
 use crate::net::request::Request;
@@ -15,6 +17,7 @@ use crate::net::response::{Response, ResponseType};
 
 /// A cached HTTP response with metadata for freshness and revalidation.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // RFC 7234 fields — not all used yet
 struct CachedResource {
     /// Original request headers (for Vary matching).
     request_headers: HeaderMap,
@@ -251,6 +254,7 @@ impl HttpCache {
     }
 
     /// Whether the cache is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

@@ -3,9 +3,9 @@
 /// This runs as a regular Rust binary (not cdylib), so if it works
 /// but the cdylib hangs, the issue is shared-library-specific.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-fn run_js(scope: &mut v8::HandleScope, script: &str, label: &str, timeout_secs: u64) -> bool {
+fn run_js(scope: &mut v8::HandleScope, script: &str, label: &str, _timeout_secs: u64) -> bool {
     eprint!("[test] {}: ", label);
     let start = Instant::now();
 

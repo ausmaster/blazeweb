@@ -1,6 +1,6 @@
 /// Element geometry, insertAdjacent*, and miscellaneous DOM methods.
 
-use crate::dom::node::{NodeData, ElementData};
+use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 
 pub(super) fn insert_adjacent_html(
@@ -120,19 +120,134 @@ pub(super) fn insert_adjacent_element(
 
 pub(super) fn get_bounding_client_rect(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    // SSR stub — all zeros
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let (abs_x, abs_y) = arena.absolute_position(node_id);
+    let width = layout.size.width as f64;
+    let height = layout.size.height as f64;
+    let x = abs_x as f64;
+    let y = abs_y as f64;
+    log::trace!(
+        "getBoundingClientRect({:?}): x={:.1} y={:.1} w={:.1} h={:.1}",
+        node_id, x, y, width, height
+    );
+
     let obj = v8::Object::new(scope);
-    for name in &["top", "left", "right", "bottom", "width", "height", "x", "y"] {
-        let k = v8::String::new(scope, name).unwrap();
-        let v = v8::Number::new(scope, 0.0);
-        obj.set(scope, k.into(), v.into());
-    }
+    let set = |s: &mut v8::HandleScope, o: v8::Local<v8::Object>, k: &str, v: f64| {
+        let key = v8::String::new(s, k).unwrap();
+        let val = v8::Number::new(s, v);
+        o.set(s, key.into(), val.into());
+    };
+    set(scope, obj, "x", x);
+    set(scope, obj, "y", y);
+    set(scope, obj, "left", x);
+    set(scope, obj, "top", y);
+    set(scope, obj, "right", x + width);
+    set(scope, obj, "bottom", y + height);
+    set(scope, obj, "width", width);
+    set(scope, obj, "height", height);
     rv.set(obj.into());
 }
 
+pub(super) fn offset_width_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let width = arena.nodes[node_id].taffy_layout.size.width;
+    rv.set(v8::Number::new(scope, width as f64).into());
+}
+
+pub(super) fn offset_height_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let height = arena.nodes[node_id].taffy_layout.size.height;
+    rv.set(v8::Number::new(scope, height as f64).into());
+}
+
+pub(super) fn client_width_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let width = layout.size.width - layout.border.left - layout.border.right;
+    rv.set(v8::Number::new(scope, width.max(0.0) as f64).into());
+}
+
+pub(super) fn client_height_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let height = layout.size.height - layout.border.top - layout.border.bottom;
+    rv.set(v8::Number::new(scope, height.max(0.0) as f64).into());
+}
+
+pub(super) fn scroll_width_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let client_w = layout.size.width - layout.border.left - layout.border.right;
+    let scroll_w = client_w.max(layout.content_size.width);
+    rv.set(v8::Number::new(scope, scroll_w.max(0.0) as f64).into());
+}
+
+pub(super) fn scroll_height_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let client_h = layout.size.height - layout.border.top - layout.border.bottom;
+    let scroll_h = client_h.max(layout.content_size.height);
+    rv.set(v8::Number::new(scope, scroll_h.max(0.0) as f64).into());
+}
+
+pub(super) fn offset_top_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let top = arena.nodes[node_id].taffy_layout.location.y;
+    rv.set(v8::Number::new(scope, top as f64).into());
+}
+
+pub(super) fn offset_left_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let left = arena.nodes[node_id].taffy_layout.location.x;
+    rv.set(v8::Number::new(scope, left as f64).into());
+}
+
+/// Zero getter for properties that don't have layout values (scrollTop, scrollLeft).
 pub(super) fn geometry_zero_getter(
     scope: &mut v8::HandleScope,
     _args: v8::FunctionCallbackArguments,
@@ -150,17 +265,33 @@ pub(super) fn element_noop(
 
 pub(super) fn get_client_rects(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    // Return array with one DOMRect (same as getBoundingClientRect result)
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    let layout = &arena.nodes[node_id].taffy_layout;
+    let (abs_x, abs_y) = arena.absolute_position(node_id);
+    let width = layout.size.width as f64;
+    let height = layout.size.height as f64;
+    let x = abs_x as f64;
+    let y = abs_y as f64;
+
     let arr = v8::Array::new(scope, 1);
     let rect = v8::Object::new(scope);
-    let zero = v8::Number::new(scope, 0.0);
-    for name in &["top", "left", "right", "bottom", "width", "height", "x", "y"] {
-        let k = v8::String::new(scope, name).unwrap();
-        rect.set(scope, k.into(), zero.into());
-    }
+    let set = |s: &mut v8::HandleScope, o: v8::Local<v8::Object>, k: &str, v: f64| {
+        let key = v8::String::new(s, k).unwrap();
+        let val = v8::Number::new(s, v);
+        o.set(s, key.into(), val.into());
+    };
+    set(scope, rect, "x", x);
+    set(scope, rect, "y", y);
+    set(scope, rect, "left", x);
+    set(scope, rect, "top", y);
+    set(scope, rect, "right", x + width);
+    set(scope, rect, "bottom", y + height);
+    set(scope, rect, "width", width);
+    set(scope, rect, "height", height);
     arr.set_index(scope, 0, rect.into());
     rv.set(arr.into());
 }

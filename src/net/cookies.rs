@@ -16,6 +16,7 @@ const MAX_COOKIES_PER_HOST: usize = 150;
 
 /// A stored cookie with metadata beyond what the `cookie` crate tracks.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // RFC 6265 fields — not all used yet
 struct StoredCookie {
     /// The parsed cookie.
     cookie: Cookie<'static>,
@@ -33,6 +34,7 @@ struct StoredCookie {
     expiry_time: Option<SystemTime>,
 }
 
+#[allow(dead_code)]
 impl StoredCookie {
     /// Whether this cookie has expired.
     fn is_expired(&self) -> bool {
@@ -258,11 +260,13 @@ impl CookieJar {
     }
 
     /// Total number of cookies stored.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.cookies.values().map(|v| v.len()).sum()
     }
 
     /// Whether the jar is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -13,6 +13,7 @@ use reqwest::{Method, Url};
 ///
 /// Drives per-resource Accept headers, Sec-Fetch-Dest values, and cache behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)] // Spec-complete enum — not all variants used yet
 pub enum Destination {
     /// Top-level document navigation.
     Document,
@@ -84,6 +85,7 @@ impl Destination {
 
 /// Request mode (Fetch spec §2.2.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Spec-complete enum
 pub enum RequestMode {
     /// Navigation request — top-level or iframe.
     Navigate,
@@ -111,6 +113,7 @@ impl RequestMode {
 
 /// Credentials mode (Fetch spec §2.2.9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Spec-complete enum
 pub enum CredentialsMode {
     /// Never send credentials.
     Omit,
@@ -124,6 +127,7 @@ pub enum CredentialsMode {
 
 /// Redirect mode (Fetch spec §2.2.10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Spec-complete enum
 pub enum RedirectMode {
     /// Follow redirects automatically (default).
     Follow,
@@ -137,6 +141,7 @@ pub enum RedirectMode {
 
 /// Cache mode (Fetch spec §2.2.11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Spec-complete enum
 pub enum CacheMode {
     /// Normal caching behavior.
     Default,
@@ -167,6 +172,7 @@ pub const USER_AGENT: &str =
 /// `xhr()`) which set destination-appropriate defaults. The unified fetch pipeline
 /// reads these fields to set Accept, Sec-Fetch-*, and other headers.
 #[derive(Debug)]
+#[allow(dead_code)] // Spec-complete struct — not all fields used yet
 pub struct Request {
     pub method: Method,
     pub url_list: Vec<Url>,
@@ -184,6 +190,7 @@ pub struct Request {
 
 impl Request {
     /// The original URL (first in the redirect chain).
+    #[allow(dead_code)]
     pub fn url(&self) -> &Url {
         self.url_list.first().expect("url_list must not be empty")
     }
