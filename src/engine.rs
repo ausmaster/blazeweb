@@ -38,7 +38,7 @@ pub fn fetch(url: &str) -> Result<RenderOutput, EngineError> {
 
 /// Fetch a URL and render with a caller-supplied FetchContext.
 pub fn fetch_with_context(url: &str, context: &FetchContext) -> Result<RenderOutput, EngineError> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| EngineError::Network {
+    let parsed = url::Url::parse(url).map_err(|e| EngineError::Network {
         url: url.into(),
         reason: format!("invalid URL: {e}"),
     })?;

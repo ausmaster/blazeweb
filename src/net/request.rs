@@ -4,8 +4,9 @@
 /// JS `fetch()` API, and `XMLHttpRequest`. Destination-aware headers (Accept,
 /// Sec-Fetch-*) are set automatically based on the request's `Destination`.
 
-use reqwest::header::HeaderMap;
-use reqwest::{Method, Url};
+use wreq::header::HeaderMap;
+use wreq::Method;
+use url::Url;
 
 // ── Destination ──────────────────────────────────────────────────────────────
 

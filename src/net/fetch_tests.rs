@@ -35,7 +35,7 @@
         let mut req = Request::document(url);
         set_default_headers(&mut req);
         assert!(req.headers.get("accept").unwrap().to_str().unwrap().starts_with("text/html"));
-        assert!(req.headers.get("user-agent").unwrap().to_str().unwrap().contains("Blazeweb"));
+        assert!(req.headers.get("user-agent").unwrap().to_str().unwrap().contains("Chrome"));
         assert_eq!(req.headers.get("sec-fetch-dest").unwrap(), "document");
         assert_eq!(req.headers.get("sec-fetch-mode").unwrap(), "navigate");
         assert_eq!(req.headers.get("sec-fetch-site").unwrap(), "none");

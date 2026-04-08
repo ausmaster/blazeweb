@@ -41,7 +41,7 @@ fn url_constructor(
     };
 
     let resolved = if let Some(base) = &base_str {
-        if let Ok(base_url) = reqwest::Url::parse(base) {
+        if let Ok(base_url) = url::Url::parse(base) {
             base_url.join(&url_str).map(|u| u.to_string()).unwrap_or(url_str.clone())
         } else {
             url_str.clone()
@@ -52,7 +52,7 @@ fn url_constructor(
 
     let obj = v8::Object::new(scope);
     // Parse and set URL parts
-    if let Ok(url) = reqwest::Url::parse(&resolved) {
+    if let Ok(url) = url::Url::parse(&resolved) {
         let set_str = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str| {
             let k = v8::String::new(scope, key).unwrap();
             let v = v8::String::new(scope, val).unwrap();

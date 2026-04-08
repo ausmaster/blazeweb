@@ -258,7 +258,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
 
     // origin
     let origin_str = scope.get_slot::<super::location::BaseUrl>()
-        .and_then(|b| b.0.as_ref().and_then(|u| reqwest::Url::parse(u).ok()))
+        .and_then(|b| b.0.as_ref().and_then(|u| url::Url::parse(u).ok()))
         .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")))
         .unwrap_or_else(|| "null".to_string());
     let k = v8::String::new(scope, "origin").unwrap();

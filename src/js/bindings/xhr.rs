@@ -171,13 +171,13 @@ fn xhr_send(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _r
     let body = if body_arg.is_null() || body_arg.is_undefined() { None } else { Some(body_arg.to_rust_string_lossy(scope)) };
 
     // Build a unified Request
-    let http_method: reqwest::Method = method.parse().unwrap_or(reqwest::Method::GET);
+    let http_method: wreq::Method = method.parse().unwrap_or(wreq::Method::GET);
     let mut request = crate::net::request::Request::xhr(resolved.clone(), http_method);
 
     // Apply headers
     for (n, v) in &req_headers {
-        if let Ok(val) = reqwest::header::HeaderValue::from_str(v) {
-            if let Ok(name) = n.parse::<reqwest::header::HeaderName>() {
+        if let Ok(val) = wreq::header::HeaderValue::from_str(v) {
+            if let Ok(name) = n.parse::<wreq::header::HeaderName>() {
                 request.headers.insert(name, val);
             }
         }

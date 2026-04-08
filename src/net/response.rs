@@ -3,8 +3,8 @@
 /// Returned by the unified fetch pipeline. Contains status, headers, body,
 /// and the full redirect chain (`url_list`).
 
-use reqwest::header::HeaderMap;
-use reqwest::Url;
+use wreq::header::HeaderMap;
+use url::Url;
 
 // ── ResponseType ─────────────────────────────────────────────────────────────
 

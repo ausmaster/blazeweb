@@ -7,10 +7,11 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-use reqwest::header::HeaderMap;
+use wreq::header::HeaderMap;
 #[cfg(test)]
-use reqwest::header::HeaderValue;
-use reqwest::{Method, Url};
+use wreq::header::HeaderValue;
+use wreq::Method;
+use url::Url;
 
 use crate::net::request::Request;
 use crate::net::response::{Response, ResponseType};

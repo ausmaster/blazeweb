@@ -9,7 +9,7 @@
         let mut hm = HeaderMap::new();
         for (k, v) in headers {
             hm.insert(
-                k.parse::<reqwest::header::HeaderName>().unwrap(),
+                k.parse::<wreq::header::HeaderName>().unwrap(),
                 HeaderValue::from_str(v).unwrap(),
             );
         }

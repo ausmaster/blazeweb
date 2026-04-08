@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use cookie::Cookie;
-use reqwest::header::HeaderMap;
-use reqwest::Url;
+use wreq::header::HeaderMap;
+use url::Url;
 
 /// Maximum cookies per registrable domain.
 const MAX_COOKIES_PER_HOST: usize = 150;
@@ -339,7 +339,7 @@ fn candidate_domains(host: &str) -> Vec<String> {
 /// Called by `http_fetch()` before sending the request.
 pub fn set_request_cookies(url: &Url, headers: &mut HeaderMap, jar: &mut CookieJar) {
     if let Some(cookie_str) = jar.cookies_for_url(url) {
-        if let Ok(val) = reqwest::header::HeaderValue::from_str(&cookie_str) {
+        if let Ok(val) = wreq::header::HeaderValue::from_str(&cookie_str) {
             headers.insert("cookie", val);
         }
     }

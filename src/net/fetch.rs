@@ -14,8 +14,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Client, Method, Url};
+use wreq::header::{self, HeaderMap, HeaderName, HeaderValue};
+use url::Url;
+use wreq::{Client, Emulation, Method};
+use wreq::http2::{Http2Options, PseudoId, PseudoOrder};
+use wreq::tls::{AlpnProtocol, TlsOptions, TlsVersion};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
@@ -44,24 +47,65 @@ pub(crate) static RT: LazyLock<Runtime> = LazyLock::new(|| {
 /// - Strip/modify headers per hop (Authorization, Sec-Fetch-*, etc.)
 /// - Inject cookies per hop (Phase 5)
 /// - Convert methods on 301/302/303
-pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    let mut root_store = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-
-    let native_result = rustls_native_certs::load_native_certs();
-    for cert in native_result.certs {
-        let _ = root_store.add(cert);
-    }
-
-    let tls_config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
+/// Build a Chrome-like TLS + HTTP/2 emulation profile.
+/// Matches Chrome 131's TLS ClientHello fingerprint so WAFs
+/// (Cloudflare, Akamai, AWS WAF) treat us as a real browser.
+fn chrome_emulation() -> Emulation {
+    // TLS config matching Chrome 131
+    let tls = TlsOptions::builder()
+        .enable_ocsp_stapling(true)
+        .curves_list("X25519:P-256:P-384")
+        .cipher_list(concat!(
+            "TLS_AES_128_GCM_SHA256:",
+            "TLS_AES_256_GCM_SHA384:",
+            "TLS_CHACHA20_POLY1305_SHA256:",
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:",
+            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
+            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:",
+            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
+            "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
+            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
         ))
-        .with_safe_default_protocol_versions()
-        .expect("valid TLS protocol versions")
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        .sigalgs_list(concat!(
+            "ecdsa_secp256r1_sha256:",
+            "rsa_pss_rsae_sha256:",
+            "rsa_pkcs1_sha256:",
+            "ecdsa_secp384r1_sha384:",
+            "rsa_pss_rsae_sha384:",
+            "rsa_pkcs1_sha384:",
+            "rsa_pss_rsae_sha512:",
+            "rsa_pkcs1_sha512:",
+            "rsa_pkcs1_sha1",
+        ))
+        .alpn_protocols([AlpnProtocol::HTTP2, AlpnProtocol::HTTP1])
+        .min_tls_version(TlsVersion::TLS_1_2)
+        .max_tls_version(TlsVersion::TLS_1_3)
+        .build();
 
+    // HTTP/2 settings matching Chrome
+    let http2 = Http2Options::builder()
+        .initial_stream_id(3)
+        .initial_window_size(6291456)
+        .initial_connection_window_size(15728640)
+        .headers_pseudo_order(
+            PseudoOrder::builder()
+                .extend([
+                    PseudoId::Method,
+                    PseudoId::Authority,
+                    PseudoId::Scheme,
+                    PseudoId::Path,
+                ])
+                .build(),
+        )
+        .build();
+
+    Emulation::builder()
+        .tls_options(tls)
+        .http2_options(http2)
+        .build()
+}
+
+pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
     let timeout_secs: u64 = std::env::var("BLAZEWEB_NETWORK_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -74,11 +118,11 @@ pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .unwrap_or(5);
 
     Client::builder()
+        .emulation(chrome_emulation())
         .timeout(Duration::from_secs(timeout_secs))
         .connect_timeout(Duration::from_secs(connect_timeout_secs))
         .pool_max_idle_per_host(10)
-        .redirect(reqwest::redirect::Policy::none())
-        .use_preconfigured_tls(tls_config)
+        .redirect(wreq::redirect::Policy::none())
         .build()
         .expect("failed to create HTTP client")
 });
@@ -401,9 +445,9 @@ fn data_fetch(request: &Request) -> Response {
                         "[fetch:data] decoded {} bytes, content-type: {}",
                         body.len(), content_type,
                     );
-                    let mut headers = reqwest::header::HeaderMap::new();
-                    if let Ok(val) = reqwest::header::HeaderValue::from_str(&content_type) {
-                        headers.insert(reqwest::header::CONTENT_TYPE, val);
+                    let mut headers = wreq::header::HeaderMap::new();
+                    if let Ok(val) = wreq::header::HeaderValue::from_str(&content_type) {
+                        headers.insert(wreq::header::CONTENT_TYPE, val);
                     }
                     Response {
                         response_type: super::response::ResponseType::Basic,
@@ -557,7 +601,7 @@ async fn network_fetch(request: &Request) -> Response {
 
     log::debug!("[fetch:net] {} {}", request.method, url_str);
 
-    let mut req = CLIENT.request(request.method.clone(), url);
+    let mut req = CLIENT.request(request.method.clone(), url.as_str());
 
     for (name, value) in request.headers.iter() {
         req = req.header(name, value);

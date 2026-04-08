@@ -648,7 +648,7 @@ fn domain_getter(
     mut rv: v8::ReturnValue,
 ) {
     let domain = scope.get_slot::<super::location::BaseUrl>()
-        .and_then(|b| b.0.as_ref().and_then(|u| reqwest::Url::parse(u).ok()))
+        .and_then(|b| b.0.as_ref().and_then(|u| url::Url::parse(u).ok()))
         .and_then(|u| u.host_str().map(|s| s.to_string()))
         .unwrap_or_default();
     rv.set(v8::String::new(scope, &domain).unwrap().into());

@@ -6,8 +6,8 @@
 //! the promises, then runs `perform_microtask_checkpoint()` so `.then()`
 //! chains execute. If those handlers enqueue more fetches, drain repeats.
 
-use reqwest::header::HeaderValue;
-use reqwest::Method;
+use wreq::header::HeaderValue;
+use wreq::Method;
 
 use crate::js::bindings::location::BaseUrl;
 use crate::net::fetch::{resolve_url, FetchContext};
@@ -174,7 +174,7 @@ pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
                     // Apply user-specified headers
                     for (k, v) in &pf.headers {
                         if let Ok(val) = HeaderValue::from_str(v) {
-                            if let Ok(name) = k.parse::<reqwest::header::HeaderName>() {
+                            if let Ok(name) = k.parse::<wreq::header::HeaderName>() {
                                 request.headers.insert(name, val);
                             }
                         }
@@ -428,7 +428,7 @@ fn response_clone(
         .unwrap_or_default();
 
     // Build a Response for cloning
-    let url_list = if let Ok(parsed) = reqwest::Url::parse(&url) {
+    let url_list = if let Ok(parsed) = url::Url::parse(&url) {
         vec![parsed]
     } else {
         vec![]
@@ -437,7 +437,7 @@ fn response_clone(
         response_type: crate::net::response::ResponseType::Basic,
         status,
         status_text,
-        headers: reqwest::header::HeaderMap::new(),
+        headers: wreq::header::HeaderMap::new(),
         body: body.into_bytes(),
         url_list,
     };
