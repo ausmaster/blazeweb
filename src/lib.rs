@@ -66,6 +66,10 @@ struct Client {
     cache_write: AtomicBool,
     http_cache: Arc<Mutex<net::http_cache::HttpCache>>,
     cookie_jar: Arc<Mutex<net::cookies::CookieJar>>,
+    /// Per-instance HTTP client with custom TLS config. None = use global CLIENT.
+    wreq_client: Option<Arc<wreq::Client>>,
+    /// Max concurrent connections per host (default 6, matching Chrome).
+    max_connections_per_host: usize,
 }
 
 impl Client {
@@ -96,6 +100,8 @@ impl Client {
             Arc::clone(&self.http_cache),
             read,
             write,
+            self.wreq_client.clone(),
+            self.max_connections_per_host,
         )
     }
 }
@@ -103,15 +109,66 @@ impl Client {
 #[pymethods]
 impl Client {
     #[new]
-    #[pyo3(signature = (*, cache=true, cache_read=true, cache_write=true))]
-    fn new(cache: bool, cache_read: bool, cache_write: bool) -> Self {
-        Self {
+    #[pyo3(signature = (
+        *,
+        cache=true,
+        cache_read=true,
+        cache_write=true,
+        timeout=None,
+        connect_timeout=None,
+        max_connections_per_host=None,
+        ech_grease=None,
+        alps=None,
+        permute_extensions=None,
+        post_quantum=None,
+    ))]
+    fn new(
+        cache: bool,
+        cache_read: bool,
+        cache_write: bool,
+        timeout: Option<u64>,
+        connect_timeout: Option<u64>,
+        max_connections_per_host: Option<usize>,
+        ech_grease: Option<bool>,
+        alps: Option<bool>,
+        permute_extensions: Option<bool>,
+        post_quantum: Option<bool>,
+    ) -> PyResult<Self> {
+        let max_per_host = max_connections_per_host.unwrap_or(6);
+
+        // Only build a custom wreq client if any network/TLS option is specified
+        let has_custom = timeout.is_some()
+            || connect_timeout.is_some()
+            || ech_grease.is_some()
+            || alps.is_some()
+            || permute_extensions.is_some()
+            || post_quantum.is_some();
+
+        let wreq_client = if has_custom {
+            let client = net::fetch::build_client(
+                timeout.unwrap_or(10),
+                connect_timeout.unwrap_or(5),
+                max_per_host,
+                ech_grease.unwrap_or(true),
+                alps.unwrap_or(true),
+                permute_extensions.unwrap_or(true),
+                post_quantum.unwrap_or(true),
+            )
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+            Some(Arc::new(client))
+        } else {
+            None
+        };
+
+        Ok(Self {
             cache: AtomicBool::new(cache),
             cache_read: AtomicBool::new(cache_read),
             cache_write: AtomicBool::new(cache_write),
             http_cache: Arc::new(Mutex::new(net::http_cache::HttpCache::new())),
             cookie_jar: Arc::new(Mutex::new(net::cookies::CookieJar::new())),
-        }
+            wreq_client,
+            max_connections_per_host: max_per_host,
+        })
     }
 
     /// Render HTML with JavaScript execution, using the persistent cache.

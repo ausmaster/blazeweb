@@ -73,15 +73,23 @@ def fetch(url: str) -> RenderResult:
 
 
 class Client:
-    """HTTP client with per-instance script cache for external script fetches.
+    """HTTP client with per-instance cache, cookies, and TLS configuration.
 
-    Each Client maintains its own cache. Cache behavior is controllable at
-    the class level and per-render call.
+    Each Client maintains its own HTTP cache, cookie jar, and optionally
+    a custom TLS configuration. Cache and TLS behavior are controllable
+    at the class level.
 
     Args:
         cache: Master cache toggle (default True).
         cache_read: Whether to read from cache (default True).
         cache_write: Whether to write to cache (default True).
+        timeout: Request timeout in seconds (default 10).
+        connect_timeout: Connection timeout in seconds (default 5).
+        max_connections_per_host: Max concurrent connections per host (default 6).
+        ech_grease: Enable ECH GREASE TLS extension (default True).
+        alps: Enable ALPS protocol negotiation (default True).
+        permute_extensions: Randomize TLS extension order (default True).
+        post_quantum: Enable X25519MLKEM768 post-quantum key exchange (default True).
     """
 
     def __init__(
@@ -90,9 +98,25 @@ class Client:
         cache: bool = True,
         cache_read: bool = True,
         cache_write: bool = True,
+        timeout: int | None = None,
+        connect_timeout: int | None = None,
+        max_connections_per_host: int | None = None,
+        ech_grease: bool | None = None,
+        alps: bool | None = None,
+        permute_extensions: bool | None = None,
+        post_quantum: bool | None = None,
     ) -> None:
         self._inner = _Client(
-            cache=cache, cache_read=cache_read, cache_write=cache_write,
+            cache=cache,
+            cache_read=cache_read,
+            cache_write=cache_write,
+            timeout=timeout,
+            connect_timeout=connect_timeout,
+            max_connections_per_host=max_connections_per_host,
+            ech_grease=ech_grease,
+            alps=alps,
+            permute_extensions=permute_extensions,
+            post_quantum=post_quantum,
         )
 
     def render(

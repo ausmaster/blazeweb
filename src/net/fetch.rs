@@ -51,51 +51,73 @@ pub(crate) static RT: LazyLock<Runtime> = LazyLock::new(|| {
 /// Matches Chrome 131's TLS ClientHello fingerprint so WAFs
 /// (Cloudflare, Akamai, AWS WAF) treat us as a real browser.
 fn chrome_emulation() -> Emulation {
-    // TLS config matching Chrome 131's exact ClientHello fingerprint.
-    // Includes GREASE, ECH, signed cert timestamps, ALPS — all the extensions
-    // that WAFs (Cloudflare, Akamai, Azure Front Door) check for.
-    let tls = TlsOptions::builder()
+    build_emulation(true, true, true, true)
+}
+
+// ── Shared Chrome cipher/sigalgs constants ──────────────────────────────────
+
+/// Chrome's cipher list (TLS 1.3 + 1.2, including legacy CBC/RSA for fingerprint accuracy).
+const CHROME_CIPHER_LIST: &str = concat!(
+    "TLS_AES_128_GCM_SHA256:",
+    "TLS_AES_256_GCM_SHA384:",
+    "TLS_CHACHA20_POLY1305_SHA256:",
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:",
+    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:",
+    "TLS_RSA_WITH_AES_128_GCM_SHA256:",
+    "TLS_RSA_WITH_AES_256_GCM_SHA384:",
+    "TLS_RSA_WITH_AES_128_CBC_SHA:",
+    "TLS_RSA_WITH_AES_256_CBC_SHA",
+);
+
+/// Chrome 145's signature algorithms (8 algorithms, no rsa_pkcs1_sha1).
+const CHROME_SIGALGS: &str = concat!(
+    "ecdsa_secp256r1_sha256:",
+    "rsa_pss_rsae_sha256:",
+    "rsa_pkcs1_sha256:",
+    "ecdsa_secp384r1_sha384:",
+    "rsa_pss_rsae_sha384:",
+    "rsa_pkcs1_sha384:",
+    "rsa_pss_rsae_sha512:",
+    "rsa_pkcs1_sha512",
+);
+
+/// Build a Chrome-like TLS + HTTP/2 emulation profile with configurable extensions.
+///
+/// All 4 flags default to `true` for full Chrome 145 fingerprint accuracy.
+/// Verified via Wireshark capture comparison against real Chrome.
+fn build_emulation(ech_grease: bool, alps: bool, permute_extensions: bool, post_quantum: bool) -> Emulation {
+    let curves = if post_quantum {
+        "X25519MLKEM768:X25519:P-256:P-384"
+    } else {
+        "X25519:P-256:P-384"
+    };
+
+    let mut tls_builder = TlsOptions::builder()
         .grease_enabled(true)
         .enable_ocsp_stapling(true)
         .enable_signed_cert_timestamps(true)
-        .curves_list("X25519:P-256:P-384")
-        .cipher_list(concat!(
-            // TLS 1.3 ciphers
-            "TLS_AES_128_GCM_SHA256:",
-            "TLS_AES_256_GCM_SHA384:",
-            "TLS_CHACHA20_POLY1305_SHA256:",
-            // TLS 1.2 ECDHE AEAD ciphers
-            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:",
-            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
-            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:",
-            // TLS 1.2 legacy ciphers (Chrome includes these for compatibility;
-            // their presence in the ClientHello is part of the browser fingerprint
-            // that CDNs like Azure Front Door check)
-            "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:",
-            "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:",
-            "TLS_RSA_WITH_AES_128_GCM_SHA256:",
-            "TLS_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_RSA_WITH_AES_128_CBC_SHA:",
-            "TLS_RSA_WITH_AES_256_CBC_SHA",
-        ))
-        .sigalgs_list(concat!(
-            "ecdsa_secp256r1_sha256:",
-            "rsa_pss_rsae_sha256:",
-            "rsa_pkcs1_sha256:",
-            "ecdsa_secp384r1_sha384:",
-            "rsa_pss_rsae_sha384:",
-            "rsa_pkcs1_sha384:",
-            "rsa_pss_rsae_sha512:",
-            "rsa_pkcs1_sha512:",
-            "rsa_pkcs1_sha1",
-        ))
+        .enable_ech_grease(ech_grease)
+        .permute_extensions(permute_extensions)
+        .curves_list(curves)
+        .cipher_list(CHROME_CIPHER_LIST)
+        .sigalgs_list(CHROME_SIGALGS)
         .alpn_protocols([AlpnProtocol::HTTP2, AlpnProtocol::HTTP1])
         .min_tls_version(TlsVersion::TLS_1_2)
-        .max_tls_version(TlsVersion::TLS_1_3)
-        .build();
+        .max_tls_version(TlsVersion::TLS_1_3);
+
+    if alps {
+        tls_builder = tls_builder
+            .alps_protocols([AlpsProtocol::HTTP2])
+            .alps_use_new_codepoint(true);
+    }
+
+    let tls = tls_builder.build();
 
     // HTTP/2 settings matching Chrome
     let http2 = Http2Options::builder()
@@ -142,6 +164,30 @@ pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .expect("failed to create HTTP client")
 });
 
+/// Build a custom wreq `Client` with user-specified TLS and network options.
+///
+/// Used by the Python `Client` class to create per-instance HTTP clients.
+/// The cipher list, HTTP/2 settings, and base TLS config are always Chrome-like;
+/// only the 4 boolean TLS feature flags and network timeouts are configurable.
+pub fn build_client(
+    timeout_secs: u64,
+    connect_timeout_secs: u64,
+    max_connections_per_host: usize,
+    ech_grease: bool,
+    alps: bool,
+    permute_extensions: bool,
+    post_quantum: bool,
+) -> Result<Client, String> {
+    Client::builder()
+        .emulation(build_emulation(ech_grease, alps, permute_extensions, post_quantum))
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .pool_max_idle_per_host(max_connections_per_host)
+        .redirect(wreq::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))
+}
+
 // ── FetchContext ──────────────────────────────────────────────────────────────
 
 /// Shared context for a fetch operation (passed through the pipeline).
@@ -158,9 +204,16 @@ pub struct FetchContext {
     pub cache_read: bool,
     /// Whether to write to the HTTP cache (default: true).
     pub cache_write: bool,
+    /// Per-instance HTTP client. Falls back to global CLIENT if None.
+    pub client: Option<Arc<Client>>,
+    /// Max concurrent connections per host (Chrome default: 6).
+    pub max_connections_per_host: usize,
 }
 
 impl FetchContext {
+    /// Default max connections per host (Chrome: 6).
+    const DEFAULT_MAX_PER_HOST: usize = 6;
+
     /// Create a context with no cookie jar or cache (stateless fetch).
     pub fn new(base_url: Option<&str>) -> Self {
         Self {
@@ -169,6 +222,8 @@ impl FetchContext {
             http_cache: None,
             cache_read: true,
             cache_write: true,
+            client: None,
+            max_connections_per_host: Self::DEFAULT_MAX_PER_HOST,
         }
     }
 
@@ -180,18 +235,22 @@ impl FetchContext {
             http_cache: Some(Arc::new(std::sync::Mutex::new(crate::net::http_cache::HttpCache::new()))),
             cache_read: true,
             cache_write: true,
+            client: None,
+            max_connections_per_host: Self::DEFAULT_MAX_PER_HOST,
         }
     }
 
-    /// Create a context with shared (external) cache and cookie jar.
+    /// Create a context with shared (external) cache, cookie jar, and optional custom client.
     ///
-    /// Used by `Client` to pass persistent cache/cookies through the pipeline.
+    /// Used by `Client` to pass persistent cache/cookies and per-instance HTTP client.
     pub fn with_shared(
         base_url: Option<&str>,
         cookie_jar: Arc<std::sync::Mutex<crate::net::cookies::CookieJar>>,
         http_cache: Arc<std::sync::Mutex<crate::net::http_cache::HttpCache>>,
         cache_read: bool,
         cache_write: bool,
+        client: Option<Arc<Client>>,
+        max_connections_per_host: usize,
     ) -> Self {
         Self {
             base_url: base_url.map(|s| s.to_string()),
@@ -199,6 +258,8 @@ impl FetchContext {
             http_cache: Some(http_cache),
             cache_read,
             cache_write,
+            client,
+            max_connections_per_host,
         }
     }
 }
@@ -297,12 +358,9 @@ async fn fetch_parallel_async(requests: Vec<(usize, Request)>, context: &FetchCo
 
     // Per-host connection limit matching Chrome's model (chromium/net/socket/
     // client_socket_pool_manager.cc:54: "Default to allow up to 6 connections per host").
-    // CDNs like Azure Front Door rate-limit clients that open more connections than
-    // a real browser would. Configurable via BLAZEWEB_MAX_CONNECTIONS_PER_HOST.
-    let max_per_host: usize = std::env::var("BLAZEWEB_MAX_CONNECTIONS_PER_HOST")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(6);
+    // Uses context.max_connections_per_host which defaults to 6 but is configurable
+    // per Client instance from Python.
+    let max_per_host = context.max_connections_per_host;
 
     // Build per-host semaphores — requests to the same origin share a semaphore,
     // requests to different origins run fully in parallel.
@@ -376,10 +434,13 @@ fn set_default_headers(request: &mut Request) {
         }
     }
 
-    // Accept-Language
-    if !h.contains_key("accept-language") {
-        h.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
-    }
+    // Accept-Language — intentionally NOT set here.
+    // Chrome does not send Accept-Language at the application/fetch level
+    // (confirmed via Playwright request interception). CDNs like Azure Front Door
+    // treat Accept-Language as a content negotiation trigger that routes requests
+    // through a slow localization pipeline (adds 5-10 seconds latency).
+    // The browser's network stack may add it at a lower level, but for SSR
+    // fetching we omit it to avoid CDN penalties.
 
     // Accept-Encoding — intentionally NOT set here.
     // wreq handles compression via its gzip/brotli/deflate features at the transport layer.
@@ -587,7 +648,7 @@ async fn http_network_or_cache_fetch(request: &mut Request, context: &FetchConte
         }
     }
 
-    let response = network_fetch(request).await;
+    let response = network_fetch(request, context).await;
 
     // Handle 304 Not Modified → refresh cached entry (needs cache_read to have sent conditional headers)
     if response.status == 304 {
@@ -623,15 +684,17 @@ async fn http_network_or_cache_fetch(request: &mut Request, context: &FetchConte
     response
 }
 
-/// Raw network fetch via the global reqwest CLIENT.
-async fn network_fetch(request: &Request) -> Response {
+/// Raw network fetch. Uses the context's per-instance client if available,
+/// otherwise falls back to the global CLIENT.
+async fn network_fetch(request: &Request, context: &FetchContext) -> Response {
     let url = request.current_url().clone();
     let url_str = url.as_str().to_owned();
     let t0 = Instant::now();
 
     log::debug!("[fetch:net] {} {}", request.method, url_str);
 
-    let mut req = CLIENT.request(request.method.clone(), url.as_str());
+    let client = context.client.as_deref().unwrap_or(&*CLIENT);
+    let mut req = client.request(request.method.clone(), url.as_str());
 
     for (name, value) in request.headers.iter() {
         req = req.header(name, value);
@@ -773,7 +836,9 @@ fn recompute_sec_fetch_headers(request: &mut Request) {
     let sec_keys: Vec<HeaderName> = request
         .headers
         .keys()
-        .filter(|k| k.as_str().starts_with("sec-fetch-") || k.as_str().starts_with("sec-ch-"))
+        .filter(|k| k.as_str().starts_with("sec-fetch-"))
+        // Note: sec-ch-ua-* (Client Hints) are NOT stripped — they persist across
+        // redirects. Only sec-fetch-* (Fetch Metadata) are recomputed per hop.
         .cloned()
         .collect();
     for key in sec_keys {

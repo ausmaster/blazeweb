@@ -189,3 +189,72 @@
         assert!(resp.ok());
         assert!(resp.was_redirected());
     }
+
+    // ─── build_client / configurable TLS tests ─────────────────────────────
+
+    #[test]
+    fn test_build_client_default_options() {
+        let client = build_client(10, 5, 6, true, true, true, true);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_build_client_no_post_quantum() {
+        let client = build_client(10, 5, 6, true, true, true, false);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_build_client_no_alps() {
+        let client = build_client(10, 5, 6, true, false, true, true);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_build_client_all_disabled() {
+        let client = build_client(10, 5, 6, false, false, false, false);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_fetch_context_default_max_per_host() {
+        let ctx = FetchContext::new(None);
+        assert_eq!(ctx.max_connections_per_host, 6);
+        assert!(ctx.client.is_none());
+    }
+
+    #[test]
+    fn test_fetch_context_with_shared_custom_client() {
+        let custom = build_client(5, 2, 3, false, false, false, false).unwrap();
+        let ctx = FetchContext::with_shared(
+            Some("https://example.com"),
+            std::sync::Arc::new(std::sync::Mutex::new(crate::net::cookies::CookieJar::new())),
+            std::sync::Arc::new(std::sync::Mutex::new(crate::net::http_cache::HttpCache::new())),
+            true,
+            true,
+            Some(std::sync::Arc::new(custom)),
+            3,
+        );
+        assert!(ctx.client.is_some());
+        assert_eq!(ctx.max_connections_per_host, 3);
+    }
+
+    #[test]
+    fn test_build_client_can_fetch() {
+        // Verify custom client can make real HTTPS requests through our pipeline
+        let custom = build_client(10, 5, 6, true, true, true, true).unwrap();
+        let custom_ctx = FetchContext {
+            base_url: Some("https://httpbin.org/html".to_string()),
+            cookie_jar: None,
+            http_cache: None,
+            cache_read: false,
+            cache_write: false,
+            client: Some(std::sync::Arc::new(custom)),
+            max_connections_per_host: 6,
+        };
+        let url = Url::parse("https://httpbin.org/html").unwrap();
+        let mut req = Request::document(url);
+        let resp = fetch(&mut req, &custom_ctx);
+        assert!(resp.ok(), "Custom client fetch failed: status={} text={}", resp.status, resp.status_text);
+        assert!(resp.text().contains("Herman Melville"));
+    }
