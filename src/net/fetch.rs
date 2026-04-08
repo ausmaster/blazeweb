@@ -18,7 +18,7 @@ use wreq::header::{self, HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 use wreq::{Client, Emulation, Method};
 use wreq::http2::{Http2Options, PseudoId, PseudoOrder};
-use wreq::tls::{AlpnProtocol, TlsOptions, TlsVersion};
+use wreq::tls::{AlpnProtocol, AlpsProtocol, TlsOptions, TlsVersion};
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 
@@ -51,20 +51,35 @@ pub(crate) static RT: LazyLock<Runtime> = LazyLock::new(|| {
 /// Matches Chrome 131's TLS ClientHello fingerprint so WAFs
 /// (Cloudflare, Akamai, AWS WAF) treat us as a real browser.
 fn chrome_emulation() -> Emulation {
-    // TLS config matching Chrome 131
+    // TLS config matching Chrome 131's exact ClientHello fingerprint.
+    // Includes GREASE, ECH, signed cert timestamps, ALPS — all the extensions
+    // that WAFs (Cloudflare, Akamai, Azure Front Door) check for.
     let tls = TlsOptions::builder()
+        .grease_enabled(true)
         .enable_ocsp_stapling(true)
+        .enable_signed_cert_timestamps(true)
         .curves_list("X25519:P-256:P-384")
         .cipher_list(concat!(
+            // TLS 1.3 ciphers
             "TLS_AES_128_GCM_SHA256:",
             "TLS_AES_256_GCM_SHA384:",
             "TLS_CHACHA20_POLY1305_SHA256:",
+            // TLS 1.2 ECDHE AEAD ciphers
             "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:",
             "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
             "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:",
             "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
             "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:",
+            // TLS 1.2 legacy ciphers (Chrome includes these for compatibility;
+            // their presence in the ClientHello is part of the browser fingerprint
+            // that CDNs like Azure Front Door check)
+            "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:",
+            "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:",
+            "TLS_RSA_WITH_AES_128_GCM_SHA256:",
+            "TLS_RSA_WITH_AES_256_GCM_SHA384:",
+            "TLS_RSA_WITH_AES_128_CBC_SHA:",
+            "TLS_RSA_WITH_AES_256_CBC_SHA",
         ))
         .sigalgs_list(concat!(
             "ecdsa_secp256r1_sha256:",
@@ -121,7 +136,7 @@ pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .emulation(chrome_emulation())
         .timeout(Duration::from_secs(timeout_secs))
         .connect_timeout(Duration::from_secs(connect_timeout_secs))
-        .pool_max_idle_per_host(10)
+        .pool_max_idle_per_host(6)  // Chrome: 6 sockets per host group
         .redirect(wreq::redirect::Policy::none())
         .build()
         .expect("failed to create HTTP client")
@@ -280,17 +295,31 @@ pub fn fetch_parallel(requests: Vec<(usize, Request)>, context: &FetchContext) -
 async fn fetch_parallel_async(requests: Vec<(usize, Request)>, context: &FetchContext) -> Vec<(usize, Response)> {
     let mut set = JoinSet::new();
 
-    // Cap concurrent requests to avoid holding dozens of timing-out connections.
-    // Completed requests release the permit immediately, letting queued ones start.
-    let max_concurrent: usize = std::env::var("BLAZEWEB_MAX_CONCURRENT_FETCHES")
+    // Per-host connection limit matching Chrome's model (chromium/net/socket/
+    // client_socket_pool_manager.cc:54: "Default to allow up to 6 connections per host").
+    // CDNs like Azure Front Door rate-limit clients that open more connections than
+    // a real browser would. Configurable via BLAZEWEB_MAX_CONNECTIONS_PER_HOST.
+    let max_per_host: usize = std::env::var("BLAZEWEB_MAX_CONNECTIONS_PER_HOST")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        .unwrap_or(6);
+
+    // Build per-host semaphores — requests to the same origin share a semaphore,
+    // requests to different origins run fully in parallel.
+    let mut host_semaphores: std::collections::HashMap<String, Arc<tokio::sync::Semaphore>> =
+        std::collections::HashMap::new();
+    for (_, request) in &requests {
+        let key = request.current_url().host_str().unwrap_or("").to_string();
+        host_semaphores
+            .entry(key)
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(max_per_host)));
+    }
 
     for (idx, mut request) in requests {
         let ctx = context.clone();
-        let sem = semaphore.clone();
+        let key = request.current_url().host_str().unwrap_or("").to_string();
+        let sem = host_semaphores.get(&key).cloned()
+            .unwrap_or_else(|| Arc::new(tokio::sync::Semaphore::new(max_per_host)));
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let t0 = Instant::now();
@@ -352,10 +381,11 @@ fn set_default_headers(request: &mut Request) {
         h.insert("accept-language", HeaderValue::from_static("en-US,en;q=0.9"));
     }
 
-    // Accept-Encoding
-    if !h.contains_key("accept-encoding") {
-        h.insert("accept-encoding", HeaderValue::from_static("gzip, deflate, br"));
-    }
+    // Accept-Encoding — intentionally NOT set here.
+    // wreq handles compression via its gzip/brotli/deflate features at the transport layer.
+    // Explicitly setting this header triggers bot detection on some CDNs (Azure Front Door)
+    // because the format differs from how real browsers negotiate encoding (via HPACK in HTTP/2
+    // or implicitly in HTTP/1.1). Chrome does not set this header at the application level.
 
     // Sec-CH-UA Client Hints — Chrome sends these on every request by default.
     // Missing these is a strong bot signal for modern WAFs (Cloudflare, Akamai, AWS WAF).
