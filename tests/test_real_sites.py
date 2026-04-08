@@ -81,7 +81,7 @@ SITES = [
     # ── News & Media ─────────────────────────────────────────────────────
     "https://www.nytimes.com",
     "https://www.bbc.com",
-    "https://www.cnn.com",
+    "https://www.npr.org",
     "https://www.reuters.com",
     "https://www.theguardian.com",
     "https://www.washingtonpost.com",
@@ -497,8 +497,16 @@ def _render_worker(html, base_url, out_path, err_path, js_err_path):
             f.write(f"ERR|{type(e).__name__}: {e}")
 
 
+# TODO: The gauntlet currently uses render(html) with Chrome-fetched HTML,
+# meaning blazeweb has no cookies for script fetches. Sites like Azure (53/70
+# script failures) would benefit from blazeweb.fetch(url) which establishes
+# cookies. However, fetch() is blocked by TLS fingerprinting on some sites
+# (Tesla, Intel return 403). Need reqwest-impersonate or Sec-CH-UA headers
+# to fix the TLS/header fingerprint before switching to fetch().
+
+
 def render_site(
-    html: str, base_url: str, timeout: float = 15.0,
+    html: str, base_url: str, timeout: float = 10.0,
 ) -> tuple[str | None, float, str | None, list[str]]:
     """Run blazeweb.render() in a forked subprocess with timeout.
 
@@ -636,7 +644,7 @@ def test_real_site(url, browser):
 
     chrome_t0 = time.perf_counter()
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        page.goto(url, wait_until="domcontentloaded", timeout=15000)
     except Exception as e:
         score.skipped = True
         score.skip_reason = str(e)[:200]

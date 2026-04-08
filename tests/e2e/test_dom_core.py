@@ -1,29 +1,7 @@
-"""End-to-end tests for DOM APIs and Web APIs.
+"""E2E tests: Core DOM operations (importNode, adoptNode, TreeWalker, NodeIterator, MutationObserver, type hierarchy)"""
 
-These tests exercise the full blazeweb render pipeline from Python,
-covering APIs that are NOT tested by other specialized test files
-(test_modules.py, test_chrome_conformance.py, etc.).
-"""
-
-import re
-
+from .conftest import text_of, render
 import blazeweb
-
-
-def text_of(html: str, element_id: str) -> str:
-    """Extract text content of an element by id from rendered HTML."""
-    pattern = rf'id="{re.escape(element_id)}"[^>]*>([^<]*)<'
-    m = re.search(pattern, html)
-    return m.group(1) if m else ""
-
-
-def render(html: str) -> str:
-    """Shortcut: render HTML and return the output string."""
-    return blazeweb.render(html)
-
-
-# ─── importNode ──────────────────────────────────────────────────────────────
-
 
 class TestImportNode:
     def test_deep_preserves_children(self):
@@ -685,469 +663,209 @@ class TestMutationObserver:
 # ─── Timers ──────────────────────────────────────────────────────────────────
 
 
-class TestTimers:
-    def test_request_animation_frame(self):
-        html = render("""<html><body>
-        <div id="result">pending</div>
-        <script>
-            requestAnimationFrame(function() {
-                document.getElementById('result').textContent = 'raf-fired';
-            });
-        </script></body></html>""")
-        assert text_of(html, "result") == "raf-fired"
-
-    def test_nested_timers(self):
+class TestChildrenItem:
+    def test_children_item_method(self):
+        """Element.children should have .item() method."""
         html = render("""<html><body>
         <div id="result"></div>
         <script>
-            var order = [];
-            setTimeout(function() {
-                order.push('outer');
-                setTimeout(function() {
-                    order.push('inner');
-                    document.getElementById('result').textContent = order.join(',');
-                }, 0);
-            }, 0);
-        </script></body></html>""")
-        assert text_of(html, "result") == "outer,inner"
-
-    def test_timer_ordering(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var order = [];
-            setTimeout(function() { order.push('a'); }, 10);
-            setTimeout(function() { order.push('b'); }, 0);
-            setTimeout(function() {
-                order.push('c');
-                document.getElementById('result').textContent = order.join(',');
-            }, 20);
-        </script></body></html>""")
-        assert text_of(html, "result") == "b,a,c"
-
-
-# ─── Events ──────────────────────────────────────────────────────────────────
-
-
-class TestEvents:
-    def test_remove_event_listener(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var count = 0;
-            function handler() { count++; }
-            var el = document.getElementById('result');
-            el.addEventListener('click', handler);
-            el.removeEventListener('click', handler);
-            el.dispatchEvent(new Event('click'));
-            el.textContent = String(count);
-        </script></body></html>""")
-        assert text_of(html, "result") == "0"
-
-    def test_custom_event(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var detail = null;
-            document.addEventListener('myevent', function(e) {
-                detail = e.detail;
-            });
-            document.dispatchEvent(new CustomEvent('myevent',
-                { detail: 'payload' }));
-            document.getElementById('result').textContent = String(detail);
-        </script></body></html>""")
-        assert text_of(html, "result") == "payload"
-
-
-# ─── Web APIs ────────────────────────────────────────────────────────────────
-
-
-class TestWebAPIs:
-    def test_local_storage(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            localStorage.setItem('key', 'value');
-            document.getElementById('result').textContent =
-                localStorage.getItem('key');
-        </script></body></html>""")
-        assert text_of(html, "result") == "value"
-
-    def test_atob_btoa(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var encoded = btoa('hello world');
-            var decoded = atob(encoded);
-            document.getElementById('result').textContent =
-                encoded + '|' + decoded;
-        </script></body></html>""")
-        assert text_of(html, "result") == "aGVsbG8gd29ybGQ=|hello world"
-
-    def test_url_constructor(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var u = new URL('https://example.com/path?q=1#hash');
-            document.getElementById('result').textContent =
-                u.hostname + '|' + u.pathname + '|' + u.search + '|' + u.hash;
-        </script></body></html>""")
-        assert text_of(html, "result") == "example.com|/path|?q=1|#hash"
-
-    def test_dataset(self):
-        html = render("""<html><body>
-        <div id="target" data-foo="bar" data-baz-qux="hello"></div>
-        <div id="result"></div>
-        <script>
-            var ds = document.getElementById('target').dataset;
-            document.getElementById('result').textContent =
-                ds.foo + '|' + ds.bazQux;
-        </script></body></html>""")
-        assert text_of(html, "result") == "bar|hello"
-
-
-# ─── Module edge cases (missing from test_modules.py) ────────────────────────
-
-
-class TestModuleEdgeCases:
-    def test_module_timers(self):
-        html = render("""<html><body>
-        <div id="result">pending</div>
-        <script type="module">
-            setTimeout(function() {
-                document.getElementById('result').textContent = 'timer-in-module';
-            }, 0);
-        </script></body></html>""")
-        assert text_of(html, "result") == "timer-in-module"
-
-    def test_module_add_event_listener(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script type="module">
-            document.addEventListener('custom', function(e) {
-                document.getElementById('result').textContent = 'heard';
-            });
-            document.dispatchEvent(new Event('custom'));
-        </script></body></html>""")
-        assert text_of(html, "result") == "heard"
-
-    def test_classic_cannot_see_module_const(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script type="module">
-            const MODULE_SECRET = 42;
+            var div = document.createElement("div");
+            var s1 = document.createElement("span");
+            var s2 = document.createElement("span");
+            s1.textContent = "A"; s2.textContent = "B";
+            div.appendChild(s1); div.appendChild(s2);
+            document.getElementById('result').textContent = div.children.item(1).textContent;
         </script>
-        <script>
-            document.getElementById('result').textContent =
-                typeof MODULE_SECRET === 'undefined' ? 'hidden' : 'visible';
-        </script></body></html>""")
-        assert text_of(html, "result") == "hidden"
+        </body></html>""")
+        assert text_of(html, "result") == "B"
 
-    def test_module_error_does_not_affect_classic(self):
-        result = blazeweb.render("""<html><body>
-        <div id="result"></div>
-        <script>
-            window.classicRan = true;
-        </script>
-        <script type="module">
-            throw new Error('module boom');
-        </script>
-        <script>
-            document.getElementById('result').textContent =
-                window.classicRan ? 'classic-ok' : 'classic-failed';
-        </script></body></html>""")
-        assert "classic-ok" in result
-
-    def test_module_dom_content_loaded_fires_after_modules(self):
+    def test_children_item_first(self):
+        """children.item(0) should return the first element child."""
         html = render("""<html><body>
         <div id="result"></div>
         <script>
-            window.order = [];
+            var div = document.createElement("div");
+            var span = document.createElement("span");
+            span.textContent = "first";
+            div.appendChild(span);
+            document.getElementById('result').textContent = div.children.item(0).textContent;
         </script>
-        <script type="module">
-            window.order.push('module');
-        </script>
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                window.order.push('dcl');
-                document.getElementById('result').textContent =
-                    window.order.join(',');
-            });
-        </script></body></html>""")
-        assert text_of(html, "result") == "module,dcl"
+        </body></html>""")
+        assert text_of(html, "result") == "first"
 
-    def test_module_arguments_not_defined(self):
-        result = blazeweb.render("""<html><body>
-        <div id="result"></div>
-        <script type="module">
-            try {
-                void arguments;
-                document.getElementById('result').textContent = 'has-arguments';
-            } catch(e) {
-                document.getElementById('result').textContent = e.name;
-            }
-        </script></body></html>""")
-        assert "ReferenceError" in result
-
-    def test_module_globalthis_is_window(self):
+    def test_children_item_out_of_range(self):
+        """children.item(999) should return null, not throw."""
         html = render("""<html><body>
         <div id="result"></div>
-        <script type="module">
+        <script>
+            var div = document.createElement("div");
             document.getElementById('result').textContent =
-                String(globalThis === window);
+                (div.children.item(0) === null).toString();
+        </script>
+        </body></html>""")
+        assert text_of(html, "result") == "true"
+
+
+# ─── Round 2 Phase 2: Global Constructors & Window Methods ──────────────────
+
+
+class TestDOMPrototypes:
+    def test_element_prototype_has_methods(self):
+        """Element.prototype should have real DOM methods."""
+        html = render("""<html><body><div id="result"></div><script>
+            var methods = ["getAttribute", "querySelector", "setAttribute"];
+            document.getElementById('result').textContent =
+                methods.every(function(m){return typeof Element.prototype[m]==="function"}).toString();
         </script></body></html>""")
         assert text_of(html, "result") == "true"
 
-    def test_no_scripts_fast_path(self):
-        """HTML without scripts should render without V8."""
-        html = render("<html><body><p>Hello</p></body></html>")
-        assert "<p>Hello</p>" in html
-
-
-# ─── data: URL scripts ──────────────────────────────────────────────────────
-
-
-class TestDataURLScripts:
-    def test_data_url_script_src(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script src="data:text/javascript,document.getElementById('result').textContent='data-ok'"></script>
-        </body></html>""")
-        assert text_of(html, "result") == "data-ok"
-
-    def test_data_url_base64_script(self):
-        import base64
-        js = "document.getElementById('result').textContent='b64-ok'"
-        b64 = base64.b64encode(js.encode()).decode()
-        html = render(f"""<html><body>
-        <div id="result"></div>
-        <script src="data:text/javascript;base64,{b64}"></script>
-        </body></html>""")
-        assert text_of(html, "result") == "b64-ok"
-
-    def test_data_url_percent_encoded(self):
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script src="data:text/javascript,var%20x%20%3D%2042%3B%0Adocument.getElementById('result').textContent%20%3D%20String(x)"></script>
-        </body></html>""")
-        assert text_of(html, "result") == "42"
-
-
-# ─── PerformanceObserver ──────────────────────────────────────────────────────
-
-
-class TestPerformanceObserver:
-    def test_observe_receives_marks(self):
-        """PerformanceObserver callback fires with mark entries during drain."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var entries = [];
-            var observer = new PerformanceObserver(function(list) {
-                var items = list.getEntries();
-                for (var i = 0; i < items.length; i++) {
-                    entries.push(items[i].name);
-                }
-            });
-            observer.observe({entryTypes: ['mark']});
-            performance.mark('test-mark');
-            performance.mark('another-mark');
-            // Callback fires asynchronously during drain — use setTimeout to read
-            setTimeout(function() {
-                document.getElementById('result').textContent = entries.join(',');
-            }, 0);
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "test-mark,another-mark"
-
-    def test_observe_receives_measures(self):
-        """PerformanceObserver callback fires with measure entries during drain."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var results = [];
-            var observer = new PerformanceObserver(function(list) {
-                var items = list.getEntries();
-                for (var i = 0; i < items.length; i++) {
-                    results.push(items[i].name + ':' + items[i].entryType);
-                }
-            });
-            observer.observe({entryTypes: ['measure']});
-            performance.mark('start');
-            performance.measure('my-measure', 'start');
-            setTimeout(function() {
-                document.getElementById('result').textContent = results.join(',');
-            }, 0);
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "my-measure:measure"
-
-    def test_disconnect_stops_observation(self):
-        """After disconnect(), no more entries are delivered."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var count = 0;
-            var observer = new PerformanceObserver(function(list) {
-                count += list.getEntries().length;
-            });
-            observer.observe({entryTypes: ['mark']});
-            performance.mark('before');
-            observer.disconnect();
-            performance.mark('after');
-            setTimeout(function() {
-                document.getElementById('result').textContent = String(count);
-            }, 0);
-        </script>
-        </body></html>""")
-        # 'before' was queued but disconnect() clears pending entries
-        # 'after' was not queued because observer is disconnected
-        assert text_of(html, "result") == "0"
-
-    def test_take_records(self):
-        """takeRecords() returns pending entries and clears the buffer."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var observer = new PerformanceObserver(function() {});
-            observer.observe({entryTypes: ['mark']});
-            performance.mark('m1');
-            performance.mark('m2');
-            var records = observer.takeRecords();
-            var remaining = observer.takeRecords();
+    def test_node_prototype_has_methods(self):
+        """Node.prototype should have real DOM methods."""
+        html = render("""<html><body><div id="result"></div><script>
             document.getElementById('result').textContent =
-                records.length + ',' + remaining.length;
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "2,0"
+                (typeof Node.prototype.appendChild === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_supported_entry_types(self):
-        """PerformanceObserver.supportedEntryTypes is accessible."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var types = PerformanceObserver.supportedEntryTypes;
+    def test_instanceof_element(self):
+        """createElement result should be instanceof Element."""
+        html = render("""<html><body><div id="result"></div><script>
             document.getElementById('result').textContent =
-                Array.isArray(types) + ',' + types.length;
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "true,2"
+                (document.createElement("div") instanceof Element).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_entry_list_get_entries_by_type(self):
-        """PerformanceObserverEntryList.getEntriesByType() filters correctly."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var result = '';
-            var observer = new PerformanceObserver(function(list) {
-                var marks = list.getEntriesByType('mark');
-                var measures = list.getEntriesByType('measure');
-                result = marks.length + ',' + measures.length;
-            });
-            observer.observe({entryTypes: ['mark', 'measure']});
-            performance.mark('m1');
-            performance.mark('m2');
-            performance.measure('op');
-            setTimeout(function() {
-                document.getElementById('result').textContent = result;
-            }, 0);
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "2,1"
-
-    def test_entry_list_get_entries_by_name(self):
-        """PerformanceObserverEntryList.getEntriesByName() filters correctly."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var result = '';
-            var observer = new PerformanceObserver(function(list) {
-                var byName = list.getEntriesByName('target');
-                result = String(byName.length);
-            });
-            observer.observe({entryTypes: ['mark']});
-            performance.mark('target');
-            performance.mark('other');
-            performance.mark('target');
-            setTimeout(function() {
-                document.getElementById('result').textContent = result;
-            }, 0);
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "2"
-
-    def test_performance_mark_returns_entry(self):
-        """performance.mark() returns a PerformanceMark entry."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var entry = performance.mark('test');
+    def test_instanceof_htmlelement(self):
+        """createElement result should be instanceof HTMLElement."""
+        html = render("""<html><body><div id="result"></div><script>
             document.getElementById('result').textContent =
-                entry.name + ',' + entry.entryType + ',' + entry.duration;
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "test,mark,0"
+                (document.createElement("div") instanceof HTMLElement).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_performance_get_entries_by_type(self):
-        """performance.getEntriesByType() returns timeline entries."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            performance.mark('a');
-            performance.mark('b');
-            performance.measure('m');
-            var marks = performance.getEntriesByType('mark');
-            var measures = performance.getEntriesByType('measure');
+    def test_instanceof_node(self):
+        """createElement result should be instanceof Node."""
+        html = render("""<html><body><div id="result"></div><script>
             document.getElementById('result').textContent =
-                marks.length + ',' + measures.length;
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "2,1"
+                (document.createElement("div") instanceof Node).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_performance_clear_marks(self):
-        """performance.clearMarks() removes marks from timeline."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            performance.mark('a');
-            performance.mark('b');
-            performance.clearMarks('a');
-            var marks = performance.getEntriesByType('mark');
+    def test_prototype_patching(self):
+        """Libraries should be able to patch Element.prototype."""
+        html = render("""<html><body><div id="result"></div><script>
+            Element.prototype.__testPatch = function() { return "patched"; };
+            var el = document.createElement("div");
+            document.getElementById('result').textContent = el.__testPatch();
+        </script></body></html>""")
+        assert text_of(html, "result") == "patched"
+
+
+class TestDOMTypeHierarchy:
+    def test_div_instanceof_htmlelement(self):
+        html = render("""<html><body><div id="result"></div><script>
             document.getElementById('result').textContent =
-                marks.length + ',' + marks[0].name;
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "1,b"
+                (document.createElement("div") instanceof HTMLElement).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_constructor_requires_callback(self):
-        """PerformanceObserver constructor throws without callback."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            try {
-                new PerformanceObserver();
-                document.getElementById('result').textContent = 'no-error';
-            } catch(e) {
-                document.getElementById('result').textContent = 'error';
-            }
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "error"
+    def test_div_instanceof_element(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (document.createElement("div") instanceof Element).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
 
-    def test_observe_single_type_mode(self):
-        """observe({type: 'mark'}) works in single-type mode."""
-        html = render("""<html><body>
-        <div id="result"></div>
-        <script>
-            var count = 0;
-            var observer = new PerformanceObserver(function(list) {
-                count += list.getEntries().length;
-            });
-            observer.observe({type: 'mark'});
-            performance.mark('x');
-            setTimeout(function() {
-                document.getElementById('result').textContent = String(count);
-            }, 0);
-        </script>
-        </body></html>""")
-        assert text_of(html, "result") == "1"
+    def test_div_instanceof_node(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (document.createElement("div") instanceof Node).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_video_instanceof_htmlmediaelement(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (document.createElement("video") instanceof HTMLMediaElement).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_video_instanceof_htmlelement(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (document.createElement("video") instanceof HTMLElement).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_characterdata_prototype_has_data(self):
+        """CharacterData.prototype.data should exist (not undefined)."""
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                ("data" in CharacterData.prototype).toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_htmlmediaelement_prototype_has_play(self):
+        """HTMLMediaElement.prototype.play should be a function."""
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (typeof HTMLMediaElement.prototype.play === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_cdatasection_exists(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (typeof CDATASection === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_processing_instruction_exists(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (typeof ProcessingInstruction === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_document_type_exists(self):
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (typeof DocumentType === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_text_inherits_characterdata(self):
+        """Text nodes should have CharacterData methods via prototype chain."""
+        html = render("""<html><body><div id="result"></div><script>
+            var t = document.createTextNode("hello");
+            document.getElementById('result').textContent =
+                (typeof t.substringData === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_comment_inherits_characterdata(self):
+        """Comment nodes should have CharacterData methods via prototype chain."""
+        html = render("""<html><body><div id="result"></div><script>
+            var c = document.createComment("test");
+            document.getElementById('result').textContent =
+                (typeof c.appendData === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+
+    def test_element_prototype_patching_works(self):
+        """Polyfills patching Element.prototype should affect all elements."""
+        html = render("""<html><body><div id="result"></div><script>
+            Element.prototype.__testHierarchy = function() { return "patched"; };
+            var div = document.createElement("div");
+            document.getElementById('result').textContent = div.__testHierarchy();
+        </script></body></html>""")
+        assert text_of(html, "result") == "patched"
+
+    def test_htmlelement_prototype_chain(self):
+        """HTMLElement.prototype should inherit from Element.prototype."""
+        html = render("""<html><body><div id="result"></div><script>
+            document.getElementById('result').textContent =
+                (typeof HTMLElement.prototype.getAttribute === "function").toString();
+        </script></body></html>""")
+        assert text_of(html, "result") == "true"
+

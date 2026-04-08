@@ -8,23 +8,17 @@ pub(super) fn create_event(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let _event_type = args.get(0).to_rust_string_lossy(scope);
-    // Return a minimal event-like object
-    let obj = v8::Object::new(scope);
-    let set_str = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str| {
-        let k = v8::String::new(scope, key).unwrap();
-        let v = v8::String::new(scope, val).unwrap();
-        obj.set(scope, k.into(), v.into());
-    };
-    let set_bool = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: bool| {
-        let k = v8::String::new(scope, key).unwrap();
-        let v = v8::Boolean::new(scope, val);
-        obj.set(scope, k.into(), v.into());
-    };
-    set_str(scope, obj, "type", "");
-    set_bool(scope, obj, "bubbles", false);
-    set_bool(scope, obj, "cancelable", false);
-    // initEvent method
+    let event_type = args.get(0).to_rust_string_lossy(scope);
+    let is_custom = event_type.eq_ignore_ascii_case("customevent");
+    let is_error = event_type.eq_ignore_ascii_case("errorevent");
+    log::trace!("document.createEvent('{}') is_custom={}", event_type, is_custom);
+
+    // Use build_base_event to create a proper event with all standard properties
+    // (preventDefault, stopPropagation, defaultPrevented, target, etc.)
+    // We pass empty type "" — the caller will use initEvent to set type/bubbles/cancelable.
+    let obj = super::event_constructors::build_base_event(scope, "", &args);
+
+    // initEvent method (legacy DOM Level 2) — overrides type/bubbles/cancelable
     let init = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let type_val = args.get(0).to_rust_string_lossy(scope);
@@ -42,6 +36,81 @@ pub(super) fn create_event(
     }).unwrap();
     let k = v8::String::new(scope, "initEvent").unwrap();
     obj.set(scope, k.into(), init.into());
+
+    // For CustomEvent: add initCustomEvent and detail property
+    if is_custom {
+        let k = v8::String::new(scope, "detail").unwrap();
+        let null_val = v8::null(scope);
+        obj.set(scope, k.into(), null_val.into());
+
+        let init_custom = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+            let this = args.this();
+            let type_val = args.get(0).to_rust_string_lossy(scope);
+            let bubbles = if args.length() > 1 { args.get(1).boolean_value(scope) } else { false };
+            let cancelable = if args.length() > 2 { args.get(2).boolean_value(scope) } else { false };
+            let detail = if args.length() > 3 { args.get(3) } else { v8::null(scope).into() };
+
+            let k = v8::String::new(scope, "type").unwrap();
+            let v = v8::String::new(scope, &type_val).unwrap();
+            this.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "bubbles").unwrap();
+            let v = v8::Boolean::new(scope, bubbles);
+            this.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "cancelable").unwrap();
+            let v = v8::Boolean::new(scope, cancelable);
+            this.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "detail").unwrap();
+            this.set(scope, k.into(), detail);
+        }).unwrap();
+        let k = v8::String::new(scope, "initCustomEvent").unwrap();
+        obj.set(scope, k.into(), init_custom.into());
+    }
+
+    // For ErrorEvent: add initErrorEvent method
+    if is_error {
+        let init_error = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+            let this = args.this();
+            let type_val = args.get(0).to_rust_string_lossy(scope);
+            let bubbles = if args.length() > 1 { args.get(1).boolean_value(scope) } else { false };
+            let cancelable = if args.length() > 2 { args.get(2).boolean_value(scope) } else { false };
+            let k = v8::String::new(scope, "type").unwrap();
+            let v = v8::String::new(scope, &type_val).unwrap();
+            this.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "bubbles").unwrap();
+            let v = v8::Boolean::new(scope, bubbles);
+            this.set(scope, k.into(), v.into());
+            let k = v8::String::new(scope, "cancelable").unwrap();
+            let v = v8::Boolean::new(scope, cancelable);
+            this.set(scope, k.into(), v.into());
+            // ErrorEvent-specific: message, filename, lineno
+            if args.length() > 3 {
+                let k = v8::String::new(scope, "message").unwrap();
+                this.set(scope, k.into(), args.get(3));
+            }
+            if args.length() > 4 {
+                let k = v8::String::new(scope, "filename").unwrap();
+                this.set(scope, k.into(), args.get(4));
+            }
+            if args.length() > 5 {
+                let k = v8::String::new(scope, "lineno").unwrap();
+                this.set(scope, k.into(), args.get(5));
+            }
+        }).unwrap();
+        let k = v8::String::new(scope, "initErrorEvent").unwrap();
+        obj.set(scope, k.into(), init_error.into());
+        // Default ErrorEvent properties
+        for prop in &["message", "filename", "error"] {
+            let k = v8::String::new(scope, prop).unwrap();
+            let empty = v8::String::new(scope, "").unwrap();
+            obj.set(scope, k.into(), empty.into());
+        }
+        let k = v8::String::new(scope, "lineno").unwrap();
+        let zero = v8::Integer::new(scope, 0);
+        obj.set(scope, k.into(), zero.into());
+        let k = v8::String::new(scope, "colno").unwrap();
+        obj.set(scope, k.into(), zero.into());
+    }
+
     rv.set(obj.into());
 }
 

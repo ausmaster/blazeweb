@@ -67,7 +67,7 @@ fn set_str(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, v
     obj.set(scope, k.into(), v.into());
 }
 
-fn parse_url_parts(url_str: &str) -> (String, String, String, String, String, String, String, String, String) {
+pub fn parse_url_parts(url_str: &str) -> (String, String, String, String, String, String, String, String, String) {
     // Try to parse as a proper URL
     if let Ok(url) = reqwest::Url::parse(url_str) {
         let protocol = format!("{}:", url.scheme());

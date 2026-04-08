@@ -104,6 +104,11 @@ pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
                 }
             }
         }
+
+        // Flush microtasks after each timer batch — timer callbacks may
+        // resolve promises that schedule new timers or fetches (e.g., Ember's
+        // backburner run loop, React scheduler, webpack chunk loading).
+        scope.perform_microtask_checkpoint();
     }
 
     errors

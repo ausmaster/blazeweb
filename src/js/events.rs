@@ -101,15 +101,42 @@ enum PathEntry {
 
 /// Build the event propagation path from target up to Window.
 /// Returns [target, parent, ..., document, Window].
+/// Shadow-aware: when a node's parent is a shadow root (DocumentFragment),
+/// and the event is composed, continues through the shadow host.
 fn build_event_path(arena: &crate::dom::Arena, target: NodeId) -> Vec<PathEntry> {
     let mut path = vec![PathEntry::Node(target)];
     let mut current = arena.nodes[target].parent;
     while let Some(id) = current {
         path.push(PathEntry::Node(id));
+        // Check if current node is a DocumentFragment (shadow root)
+        // If so, find the host element that owns this shadow root
+        if matches!(&arena.nodes[id].data, crate::dom::node::NodeData::DocumentFragment) {
+            // This might be a shadow root — find the host
+            if let Some(host_id) = find_shadow_host(arena, id) {
+                path.push(PathEntry::Node(host_id));
+                current = arena.nodes[host_id].parent;
+                continue;
+            }
+        }
         current = arena.nodes[id].parent;
     }
     path.push(PathEntry::Window);
     path
+}
+
+/// Find the element that hosts a shadow root by searching for elements
+/// whose shadow_root field points to the given node.
+fn find_shadow_host(arena: &crate::dom::Arena, shadow_id: NodeId) -> Option<NodeId> {
+    // Search all elements for one whose shadow_root == shadow_id
+    // This is O(n) but shadow roots are rare and event dispatch is infrequent
+    for (id, node) in arena.nodes.iter() {
+        if let crate::dom::node::NodeData::Element(data) = &node.data {
+            if data.shadow_root == Some(shadow_id) {
+                return Some(id);
+            }
+        }
+    }
+    None
 }
 
 /// Convert a path entry to the ListenerKey for looking up listeners.

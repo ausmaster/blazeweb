@@ -9,6 +9,11 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
     let worker_ctor = v8::Function::new(scope, worker_constructor).unwrap();
     let key = v8::String::new(scope, "Worker").unwrap();
     global.set(scope, key.into(), worker_ctor.into());
+
+    let sw_ctor = v8::Function::new(scope, shared_worker_constructor).unwrap();
+    let key = v8::String::new(scope, "SharedWorker").unwrap();
+    global.set(scope, key.into(), sw_ctor.into());
+    log::debug!("Installed SharedWorker constructor");
 }
 
 fn message_channel_constructor(
@@ -54,6 +59,26 @@ fn worker_constructor(
     }
     let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["postMessage", "terminate", "addEventListener", "removeEventListener"] {
+        let k = v8::String::new(scope, name).unwrap();
+        obj.set(scope, k.into(), noop.into());
+    }
+    rv.set(obj.into());
+}
+
+fn shared_worker_constructor(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let obj = v8::Object::new(scope);
+    let port = create_message_port(scope);
+    let k = v8::String::new(scope, "port").unwrap();
+    obj.set(scope, k.into(), port.into());
+    let null = v8::null(scope);
+    let k = v8::String::new(scope, "onerror").unwrap();
+    obj.set(scope, k.into(), null.into());
+    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    for name in &["addEventListener", "removeEventListener"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
     }

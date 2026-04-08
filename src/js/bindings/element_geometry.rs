@@ -397,13 +397,10 @@ pub(super) fn get_attribute_node(
 
 pub(super) fn attach_shadow(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
+    args: v8::FunctionCallbackArguments,
+    rv: v8::ReturnValue,
 ) {
-    // Return a DocumentFragment as minimal shadow root
-    let arena = arena_mut(scope);
-    let frag = arena.new_node(NodeData::Document);
-    rv.set(wrap_node(scope, frag).into());
+    super::shadow_root::attach_shadow(scope, args, rv);
 }
 
 pub(super) fn element_animate(

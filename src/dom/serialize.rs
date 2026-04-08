@@ -59,12 +59,29 @@ fn serialize_node(arena: &Arena, id: NodeId, output: &mut String) {
 
             let is_void = VOID_ELEMENTS.contains(&tag);
             if !is_void {
-                let is_raw = RAW_TEXT_ELEMENTS.contains(&tag);
-                for child in arena.children(id) {
-                    if is_raw {
-                        serialize_raw_child(arena, child, output);
-                    } else {
-                        serialize_node(arena, child, output);
+                // <template> elements: serialize template_contents, not direct children
+                if tag == "template" {
+                    if let Some(content_id) = data.template_contents {
+                        for child in arena.children(content_id) {
+                            serialize_node(arena, child, output);
+                        }
+                    }
+                } else {
+                    // If element has a shadow root, serialize shadow content first
+                    // (SSR: render shadow DOM inline for the composed output)
+                    if let Some(shadow_id) = data.shadow_root {
+                        for child in arena.children(shadow_id) {
+                            serialize_node(arena, child, output);
+                        }
+                    }
+
+                    let is_raw = RAW_TEXT_ELEMENTS.contains(&tag);
+                    for child in arena.children(id) {
+                        if is_raw {
+                            serialize_raw_child(arena, child, output);
+                        } else {
+                            serialize_node(arena, child, output);
+                        }
                     }
                 }
                 output.push_str("</");

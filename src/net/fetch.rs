@@ -62,8 +62,20 @@ pub(crate) static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
+    let timeout_secs: u64 = std::env::var("BLAZEWEB_NETWORK_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    log::info!("HTTP client network timeout: {}s", timeout_secs);
+
+    let connect_timeout_secs: u64 = std::env::var("BLAZEWEB_CONNECT_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+
     Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
         .pool_max_idle_per_host(10)
         .redirect(reqwest::redirect::Policy::none())
         .use_preconfigured_tls(tls_config)
@@ -224,10 +236,19 @@ pub fn fetch_parallel(requests: Vec<(usize, Request)>, context: &FetchContext) -
 async fn fetch_parallel_async(requests: Vec<(usize, Request)>, context: &FetchContext) -> Vec<(usize, Response)> {
     let mut set = JoinSet::new();
 
+    // Cap concurrent requests to avoid holding dozens of timing-out connections.
+    // Completed requests release the permit immediately, letting queued ones start.
+    let max_concurrent: usize = std::env::var("BLAZEWEB_MAX_CONCURRENT_FETCHES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+
     for (idx, mut request) in requests {
-        // Clone the shared context (cheap — Arc clones)
         let ctx = context.clone();
+        let sem = semaphore.clone();
         set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
             let t0 = Instant::now();
             let url_str = request.current_url().as_str().to_owned();
             set_default_headers(&mut request);
@@ -290,6 +311,20 @@ fn set_default_headers(request: &mut Request) {
     // Accept-Encoding
     if !h.contains_key("accept-encoding") {
         h.insert("accept-encoding", HeaderValue::from_static("gzip, deflate, br"));
+    }
+
+    // Sec-CH-UA Client Hints — Chrome sends these on every request by default.
+    // Missing these is a strong bot signal for modern WAFs (Cloudflare, Akamai, AWS WAF).
+    if !h.contains_key("sec-ch-ua") {
+        h.insert("sec-ch-ua", HeaderValue::from_static(
+            "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"131\""
+        ));
+    }
+    if !h.contains_key("sec-ch-ua-mobile") {
+        h.insert("sec-ch-ua-mobile", HeaderValue::from_static("?0"));
+    }
+    if !h.contains_key("sec-ch-ua-platform") {
+        h.insert("sec-ch-ua-platform", HeaderValue::from_static("\"Linux\""));
     }
 
     // Sec-Fetch-* headers — only on trustworthy URLs (https, localhost)

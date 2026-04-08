@@ -123,11 +123,14 @@ fn base64_decode(input: &str) -> Option<String> {
     if input.is_empty() {
         return Some(String::new());
     }
-    let mut bytes = Vec::new();
-    let chars: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
-    if chars.len() % 4 != 0 {
-        return None;
+    let mut chars: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r' && b != b' ' && b != b'\t').collect();
+
+    // Auto-pad to multiple of 4 with '=' (browsers accept unpadded base64)
+    while chars.len() % 4 != 0 {
+        chars.push(b'=');
     }
+
+    let mut bytes = Vec::new();
     for chunk in chars.chunks(4) {
         let vals: Vec<Option<u8>> = chunk.iter().map(|&c| b64_decode_char(c)).collect();
         let a = vals[0]? as u32;
@@ -142,7 +145,10 @@ fn base64_decode(input: &str) -> Option<String> {
             }
         }
     }
-    String::from_utf8(bytes).ok()
+    // Return Latin-1 string: each byte maps directly to a char code (0-255).
+    // This matches the atob spec which returns a "binary string" where
+    // charCodeAt(i) == byte[i], not a UTF-8 string.
+    Some(bytes.iter().map(|&b| b as char).collect::<String>())
 }
 
 fn b64_decode_char(c: u8) -> Option<u8> {

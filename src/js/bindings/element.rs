@@ -53,9 +53,13 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
     set_accessor_with_setter(scope, proto, "checked", reflecting_checked_getter, reflecting_checked_setter);
     set_accessor_with_setter(scope, proto, "placeholder", reflecting_placeholder_getter, reflecting_placeholder_setter);
 
-    // Batch 5: slot / assignedSlot
+    // Batch 5: slot / assignedSlot / shadowRoot
     set_accessor(scope, proto, "slot", empty_string_getter);
     set_accessor(scope, proto, "assignedSlot", null_getter);
+    set_accessor(scope, proto, "shadowRoot", super::shadow_root::shadow_root_getter);
+
+    // Canvas API (getContext on all elements, only works on <canvas>)
+    super::canvas::install_on_element(scope, proto);
 
     // Methods
     set_method(scope, proto, "getAttribute", get_attribute);
@@ -118,6 +122,41 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
     for name in &["scrollTop", "scrollLeft", "offsetParent"] {
         set_accessor(scope, proto, name, geometry_zero_getter);
     }
+
+    // ─── HTMLElement global reflecting attributes ─────────────────────────────
+    set_accessor_with_setter(scope, proto, "title", reflecting_title_getter, reflecting_title_setter);
+    set_accessor_with_setter(scope, proto, "lang", reflecting_lang_getter, reflecting_lang_setter);
+    set_accessor_with_setter(scope, proto, "dir", reflecting_dir_getter, reflecting_dir_setter);
+    set_accessor_with_setter(scope, proto, "nonce", reflecting_nonce_getter, reflecting_nonce_setter);
+    set_accessor_with_setter(scope, proto, "draggable", reflecting_draggable_getter, reflecting_draggable_setter);
+    set_accessor_with_setter(scope, proto, "spellcheck", reflecting_spellcheck_getter, reflecting_spellcheck_setter);
+    set_accessor_with_setter(scope, proto, "autofocus", reflecting_autofocus_getter, reflecting_autofocus_setter);
+    set_accessor_with_setter(scope, proto, "translate", reflecting_translate_getter, reflecting_translate_setter);
+    set_accessor_with_setter(scope, proto, "contentEditable", content_editable_getter, content_editable_setter);
+    set_accessor(scope, proto, "isContentEditable", is_content_editable_getter);
+
+    // ─── Form constraint validation API (on all elements, harmless on non-form) ─
+    set_method(scope, proto, "checkValidity", check_validity);
+    set_method(scope, proto, "reportValidity", check_validity); // same behavior
+    set_method(scope, proto, "setCustomValidity", set_custom_validity_noop);
+    set_accessor(scope, proto, "validity", validity_getter);
+    set_accessor(scope, proto, "validationMessage", validation_message_getter);
+    set_accessor(scope, proto, "willValidate", will_validate_getter);
+}
+
+/// Install ParentNode mixin methods on a non-Element ObjectTemplate.
+/// Used by DocumentFragment so that template.content.querySelector() works.
+/// Per spec, ParentNode is a mixin on Document, DocumentFragment, and Element.
+pub fn install_parent_node_mixin(
+    scope: &mut v8::HandleScope<()>,
+    proto: &v8::Local<v8::ObjectTemplate>,
+) {
+    set_method(scope, proto, "querySelector", element_query_selector);
+    set_method(scope, proto, "querySelectorAll", element_query_selector_all);
+    set_accessor(scope, proto, "children", children_getter);
+    set_accessor(scope, proto, "childElementCount", child_element_count_getter);
+    set_accessor(scope, proto, "firstElementChild", first_element_child_getter);
+    set_accessor(scope, proto, "lastElementChild", last_element_child_getter);
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
@@ -290,6 +329,8 @@ fn children_getter(
         let wrapped = wrap_node(scope, *id);
         arr.set_index(scope, i as u32, wrapped.into());
     }
+    // Add .item() and .namedItem() for HTMLCollection semantics
+    add_item_method(scope, arr);
     rv.set(arr.into());
 }
 
@@ -408,11 +449,25 @@ fn set_attribute(
     let attr_name = args.get(0).to_rust_string_lossy(scope);
     let attr_value = args.get(1).to_rust_string_lossy(scope);
     let arena = arena_mut(scope);
+    let mut tag_for_ce: Option<String> = None;
+    let mut old_for_ce: Option<String> = None;
     if let NodeData::Element(data) = &mut arena.nodes[node_id].data {
         let old_value = data.get_attribute(&attr_name).map(|s| s.to_string());
+        // Capture for custom element callback
+        if super::custom_elements::is_custom_element_name(&data.name.local) {
+            tag_for_ce = Some(data.name.local.to_string());
+            old_for_ce = old_value.clone();
+        }
         data.set_attribute(&attr_name, &attr_value);
         crate::js::mutation_observer::notify_attribute(
             scope, node_id, &attr_name, old_value.as_deref(),
+        );
+    }
+    // Fire attributeChangedCallback after arena borrow is dropped
+    if let Some(tag) = tag_for_ce {
+        let this = args.this();
+        super::custom_elements::fire_attribute_changed_callback(
+            scope, this, &tag, &attr_name, old_for_ce.as_deref(), Some(&attr_value),
         );
     }
 }
@@ -425,14 +480,26 @@ fn remove_attribute(
     let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
     let attr_name = args.get(0).to_rust_string_lossy(scope);
     let arena = arena_mut(scope);
+    let mut tag_for_ce: Option<String> = None;
+    let mut old_for_ce: Option<String> = None;
     if let NodeData::Element(data) = &mut arena.nodes[node_id].data {
         let old_value = data.get_attribute(&attr_name).map(|s| s.to_string());
+        if super::custom_elements::is_custom_element_name(&data.name.local) {
+            tag_for_ce = Some(data.name.local.to_string());
+            old_for_ce = old_value.clone();
+        }
         data.remove_attribute(&attr_name);
         if old_value.is_some() {
             crate::js::mutation_observer::notify_attribute(
                 scope, node_id, &attr_name, old_value.as_deref(),
             );
         }
+    }
+    if let Some(tag) = tag_for_ce {
+        let this = args.this();
+        super::custom_elements::fire_attribute_changed_callback(
+            scope, this, &tag, &attr_name, old_for_ce.as_deref(), None,
+        );
     }
 }
 
@@ -629,6 +696,7 @@ fn element_get_elements_by_tag_name(
         let wrapped = wrap_node(scope, *id);
         arr.set_index(scope, i as u32, wrapped.into());
     }
+    add_item_method(scope, arr);
     rv.set(arr.into());
 }
 
@@ -642,6 +710,7 @@ fn element_get_elements_by_class_name(
     let wanted: Vec<&str> = class_names.split_whitespace().collect();
     if wanted.is_empty() {
         let arr = v8::Array::new(scope, 0);
+        add_item_method(scope, arr);
         rv.set(arr.into());
         return;
     }
@@ -653,7 +722,36 @@ fn element_get_elements_by_class_name(
         let wrapped = wrap_node(scope, *id);
         arr.set_index(scope, i as u32, wrapped.into());
     }
+    add_item_method(scope, arr);
     rv.set(arr.into());
+}
+
+/// Add item(index) and namedItem(name) methods to an array to make it
+/// behave like an HTMLCollection per the DOM spec.
+pub(super) fn add_item_method(scope: &mut v8::HandleScope, arr: v8::Local<v8::Array>) {
+    let item_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+        args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+        let this = args.this();
+        let index = args.get(0).uint32_value(scope).unwrap_or(0);
+        let k = v8::Integer::new(scope, index as i32);
+        if let Some(val) = this.get(scope, k.into()) {
+            if !val.is_undefined() {
+                rv.set(val);
+                return;
+            }
+        }
+        rv.set(v8::null(scope).into());
+    }).unwrap();
+    let key = v8::String::new(scope, "item").unwrap();
+    arr.set(scope, key.into(), item_fn.into());
+
+    let named_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+        _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+        // namedItem stub — return null (rarely used)
+        rv.set(v8::null(scope).into());
+    }).unwrap();
+    let key = v8::String::new(scope, "namedItem").unwrap();
+    arr.set(scope, key.into(), named_fn.into());
 }
 
 fn collect_elements_by_tag(
@@ -993,17 +1091,150 @@ macro_rules! reflecting_boolean_accessor {
 reflecting_boolean_accessor!(reflecting_disabled_getter, reflecting_disabled_setter, "disabled");
 reflecting_boolean_accessor!(reflecting_checked_getter, reflecting_checked_setter, "checked");
 
+// Phase 8: HTMLElement global attributes
+reflecting_string_accessor!(reflecting_title_getter, reflecting_title_setter, "title");
+reflecting_string_accessor!(reflecting_lang_getter, reflecting_lang_setter, "lang");
+reflecting_string_accessor!(reflecting_dir_getter, reflecting_dir_setter, "dir");
+reflecting_string_accessor!(reflecting_nonce_getter, reflecting_nonce_setter, "nonce");
+reflecting_boolean_accessor!(reflecting_draggable_getter, reflecting_draggable_setter, "draggable");
+reflecting_boolean_accessor!(reflecting_spellcheck_getter, reflecting_spellcheck_setter, "spellcheck");
+reflecting_boolean_accessor!(reflecting_autofocus_getter, reflecting_autofocus_setter, "autofocus");
+reflecting_boolean_accessor!(reflecting_translate_getter, reflecting_translate_setter, "translate");
+
+// contentEditable — reflects "contenteditable" attribute but as string "true"/"false"/"inherit"
+fn content_editable_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    if let NodeData::Element(data) = &arena.nodes[node_id].data {
+        let val = match data.get_attribute("contenteditable") {
+            Some("true") | Some("") => "true",
+            Some("false") => "false",
+            _ => "inherit",
+        };
+        let v = v8::String::new(scope, val).unwrap();
+        rv.set(v.into());
+    }
+}
+
+fn content_editable_setter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let val = args.get(0).to_rust_string_lossy(scope);
+    let arena = arena_mut(scope);
+    if let NodeData::Element(data) = &mut arena.nodes[node_id].data {
+        match val.as_str() {
+            "true" | "false" | "" => { data.set_attribute("contenteditable", &val); },
+            "inherit" => { data.remove_attribute("contenteditable"); },
+            _ => {
+                // Per spec: throw SyntaxError for invalid values
+                // For SSR simplicity, just set the attribute
+                data.set_attribute("contenteditable", &val);
+            }
+        }
+    }
+}
+
+fn is_content_editable_getter(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(node_id) = unwrap_node_id(scope, args.this()) else { return };
+    let arena = arena_ref(scope);
+    if let NodeData::Element(data) = &arena.nodes[node_id].data {
+        let editable = matches!(data.get_attribute("contenteditable"), Some("true") | Some(""));
+        rv.set(v8::Boolean::new(scope, editable).into());
+    }
+}
 
 pub fn clone_across_arenas(
     dst: &mut crate::dom::Arena,
     src: &crate::dom::Arena,
     src_id: crate::dom::NodeId,
 ) -> crate::dom::NodeId {
-    let data = src.nodes[src_id].data.clone();
+    let mut data = src.nodes[src_id].data.clone();
+
+    // For template elements: clone template_contents into destination arena
+    if let crate::dom::node::NodeData::Element(ref mut elem_data) = data {
+        if let Some(src_content_id) = elem_data.template_contents {
+            // Create a new DocumentFragment in destination for template content
+            let dst_content_id = dst.new_node(crate::dom::node::NodeData::DocumentFragment);
+            // Recursively clone the content fragment's children
+            for child in src.children(src_content_id) {
+                let child_id = clone_across_arenas(dst, src, child);
+                dst.append_child(dst_content_id, child_id);
+            }
+            elem_data.template_contents = Some(dst_content_id);
+        }
+    }
+
     let new_id = dst.new_node(data);
     for child in src.children(src_id) {
         let child_id = clone_across_arenas(dst, src, child);
         dst.append_child(new_id, child_id);
     }
     new_id
+}
+
+// ─── Form constraint validation stubs ───────────────────────────────────────
+
+fn check_validity(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Boolean::new(scope, true).into());
+}
+
+fn set_custom_validity_noop(
+    _scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    // No-op — SSR doesn't track custom validity
+}
+
+fn validity_getter(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let obj = v8::Object::new(scope);
+    let f = v8::Boolean::new(scope, false);
+    let t = v8::Boolean::new(scope, true);
+    for name in &[
+        "valueMissing", "typeMismatch", "patternMismatch", "tooLong",
+        "tooShort", "rangeUnderflow", "rangeOverflow", "stepMismatch",
+        "badInput", "customError",
+    ] {
+        let k = v8::String::new(scope, name).unwrap();
+        obj.set(scope, k.into(), f.into());
+    }
+    let k = v8::String::new(scope, "valid").unwrap();
+    obj.set(scope, k.into(), t.into());
+    rv.set(obj.into());
+}
+
+fn validation_message_getter(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let empty = v8::String::new(scope, "").unwrap();
+    rv.set(empty.into());
+}
+
+fn will_validate_getter(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::Boolean::new(scope, false).into());
 }

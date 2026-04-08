@@ -164,7 +164,7 @@ pub const MAX_REDIRECTS: u32 = 20;
 
 /// User-Agent string sent with all requests.
 pub const USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Blazeweb/0.1";
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// Unified HTTP request.
 ///

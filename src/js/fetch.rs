@@ -286,6 +286,12 @@ fn create_response_object<'s>(
     let body_val = v8::String::new(scope, &body_text).unwrap();
     obj.set_private(scope, body_key, body_val.into());
 
+    // body — ReadableStream wrapping the response body bytes
+    let body_bytes = body_text.as_bytes();
+    let body_stream = crate::js::bindings::streams::create_from_bytes(scope, body_bytes);
+    let k = v8::String::new(scope, "body").unwrap();
+    obj.set(scope, k.into(), body_stream.into());
+
     // headers object
     let resp_headers: Vec<(String, String)> = resp.headers.iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))

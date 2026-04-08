@@ -40,6 +40,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
     set_accessor(scope, proto, "activeElement", active_element_getter);
     set_accessor(scope, proto, "currentScript", current_script_getter);
     set_accessor(scope, proto, "doctype", doctype_getter);
+    set_accessor(scope, proto, "location", document_location_getter);
     set_accessor(scope, proto, "implementation", implementation_getter);
 
     // Collection-like accessors
@@ -273,6 +274,7 @@ fn get_elements_by_tag_name(
         let wrapped = wrap_node(scope, *id);
         arr.set_index(scope, i as u32, wrapped.into());
     }
+    super::element::add_item_method(scope, arr);
     rv.set(arr.into());
 }
 
@@ -315,6 +317,7 @@ fn get_elements_by_class_name(
         let wrapped = wrap_node(scope, *id);
         arr.set_index(scope, i as u32, wrapped.into());
     }
+    super::element::add_item_method(scope, arr);
     rv.set(arr.into());
 }
 
@@ -379,9 +382,61 @@ fn create_element(
 ) {
     let tag = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let arena = arena_mut(scope);
+    let tag_str = tag.clone();
     let name = markup5ever::QualName::new(None, markup5ever::ns!(html), tag.into());
     let node_id = arena.new_node(NodeData::Element(ElementData::new(name, vec![])));
     let wrapped = wrap_node(scope, node_id);
+
+    // Per spec: if tag name is a defined custom element, synchronously construct it.
+    // Check if the tag contains a hyphen (custom element naming requirement) and is defined.
+    if tag_str.contains('-') {
+        let is_defined = scope
+            .get_slot::<super::custom_elements::CustomElementState>()
+            .map(|state| state.definitions.contains_key(&tag_str))
+            .unwrap_or(false);
+        if is_defined {
+            // Run the custom element constructor via the construction stack.
+            // This calls __ceUpgrade(element, Constructor) which:
+            // 1. Pushes element onto construction stack
+            // 2. Calls Reflect.construct(Constructor, [], Constructor)
+            // 3. super() in the constructor returns the element from the stack
+            // 4. Constructor body runs with `this` = the element
+            let ctor_global = scope
+                .get_slot::<super::custom_elements::CustomElementState>()
+                .and_then(|state| state.definitions.get(&tag_str).map(|d| d.constructor.clone()));
+            if let Some(ctor_g) = ctor_global {
+                // Set prototype to Constructor.prototype
+                let ctor_local = v8::Local::new(scope, &ctor_g);
+                let proto_key = v8::String::new(scope, "prototype").unwrap();
+                if let Some(ctor_proto) = ctor_local.get(scope, proto_key.into()) {
+                    if ctor_proto.is_object() {
+                        wrapped.set_prototype(scope, ctor_proto);
+                    }
+                }
+                // Call __ceUpgrade(element, Constructor)
+                let global = scope.get_current_context().global(scope);
+                let upgrade_key = v8::String::new(scope, "__ceUpgrade").unwrap();
+                if let Some(upgrade_fn_val) = global.get(scope, upgrade_key.into()) {
+                    if upgrade_fn_val.is_function() {
+                        let upgrade_fn = unsafe { v8::Local::<v8::Function>::cast_unchecked(upgrade_fn_val) };
+                        let undef = v8::undefined(scope);
+                        let ctor_local2 = v8::Local::new(scope, &ctor_g);
+                        let try_catch = &mut v8::TryCatch::new(scope);
+                        if upgrade_fn.call(try_catch, undef.into(), &[wrapped.into(), ctor_local2.into()]).is_none() {
+                            if let Some(exc) = try_catch.exception() {
+                                log::warn!(
+                                    "Custom element construction failed for <{}>: {}",
+                                    tag_str, exc.to_rust_string_lossy(try_catch)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            log::trace!("createElement('{}') — synchronous custom element construction", tag_str);
+        }
+    }
+
     rv.set(wrapped.into());
 }
 
@@ -659,6 +714,19 @@ fn doctype_getter(
         }
     }
     rv.set(v8::null(scope).into());
+}
+
+/// document.location — returns the same Location object as window.location.
+fn document_location_getter(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let global = scope.get_current_context().global(scope);
+    let k = v8::String::new(scope, "location").unwrap();
+    if let Some(loc) = global.get(scope, k.into()) {
+        rv.set(loc);
+    }
 }
 
 fn implementation_getter(

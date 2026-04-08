@@ -335,10 +335,12 @@ fn child_nodes_get_trap(
             rv.set(v8::Integer::new(scope, count as i32).into());
         }
         "item" => {
-            // Return a function that takes an index
-            // We need to capture node_id — store it on the function via the target
-            let item_fn = v8::Function::new(scope, child_nodes_item_fn).unwrap();
-            // Store target on the function's context (use name hack)
+            // Pass parent node to item() via function data so it can look up children.
+            let wrapped = wrap_node(scope, node_id);
+            let item_fn = v8::Function::builder(child_nodes_item_fn)
+                .data(wrapped.into())
+                .build(scope)
+                .unwrap();
             rv.set(item_fn.into());
         }
         "forEach" => {
@@ -371,26 +373,28 @@ fn child_nodes_get_trap(
 }
 
 /// item(index) method on live childNodes.
+/// Parent node_id is passed via Function::builder data (a wrapped node object).
 fn child_nodes_item_fn(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    // `this` is the proxy — get the target's nodeId
-    let _this = args.this();
-    // For item(), we need the parent node_id. Traverse from this proxy's target.
-    // Since `this` is the proxy, we need another way. Store parent id externally.
-    // Simplest: walk from the proxy receiver. Actually for item(), we can look at caller context.
-    // Fallback: just scan all children. Since `this` = proxy, we stored __nodeId on target.
-    // With Proxy, `this` is the receiver which is the proxy itself, not the target.
-    // We can't easily get target from proxy in a generic function.
-    // Instead, let's use a different approach: return an ad-hoc closure.
+    let data = args.data();
+    let parent_obj = unsafe { v8::Local::<v8::Object>::cast_unchecked(data) };
+    let Some(node_id) = unwrap_node_id(scope, parent_obj) else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
 
     let index = args.get(0).uint32_value(scope).unwrap_or(0) as usize;
-    // This is a limitation — we need node_id but can't get it here easily.
-    // Return null for now (item() is rarely used compared to indexed access).
-    rv.set(v8::null(scope).into());
-    let _ = index;
+    let arena = arena_ref(scope);
+    if let Some(child_id) = arena.children(node_id).nth(index) {
+        log::trace!("childNodes.item({}) on {:?} → {:?}", index, node_id, child_id);
+        rv.set(wrap_node(scope, child_id).into());
+    } else {
+        log::trace!("childNodes.item({}) on {:?} → null (out of bounds)", index, node_id);
+        rv.set(v8::null(scope).into());
+    }
 }
 
 /// forEach(callback) on live childNodes.
@@ -634,6 +638,8 @@ fn append_child(
         crate::js::mutation_observer::notify_child_list(
             scope, parent_id, &[child_id], &[], prev_sib, None,
         );
+        // Fire connectedCallback for custom elements
+        fire_ce_connected_if_needed(scope, child_obj, child_id);
     }
     rv.set(child_arg);
 }
@@ -672,6 +678,8 @@ fn remove_child(
     crate::js::mutation_observer::notify_child_list(
         scope, parent_id, &[], &[child_id], prev_sib, next_sib,
     );
+    // Fire disconnectedCallback for custom elements
+    fire_ce_disconnected_if_needed(scope, child_obj, child_id);
     rv.set(child_arg);
 }
 
@@ -1445,4 +1453,40 @@ fn is_default_namespace(
     }
     // No namespace found — default is empty
     rv.set(v8::Boolean::new(scope, namespace.is_empty()).into());
+}
+
+// ─── Custom element lifecycle helpers ────────────────────────────────────
+
+/// Fire connectedCallback if the node is a registered custom element.
+fn fire_ce_connected_if_needed(
+    scope: &mut v8::HandleScope,
+    node_obj: v8::Local<v8::Object>,
+    node_id: crate::dom::NodeId,
+) {
+    let arena = arena_ref(scope);
+    if let NodeData::Element(data) = &arena.nodes[node_id].data {
+        let tag = &*data.name.local;
+        if super::custom_elements::is_custom_element_name(tag) {
+            let tag_owned = tag.to_string();
+            drop(arena);
+            super::custom_elements::fire_connected_callback(scope, node_obj, &tag_owned);
+        }
+    }
+}
+
+/// Fire disconnectedCallback if the node is a registered custom element.
+fn fire_ce_disconnected_if_needed(
+    scope: &mut v8::HandleScope,
+    node_obj: v8::Local<v8::Object>,
+    node_id: crate::dom::NodeId,
+) {
+    let arena = arena_ref(scope);
+    if let NodeData::Element(data) = &arena.nodes[node_id].data {
+        let tag = &*data.name.local;
+        if super::custom_elements::is_custom_element_name(tag) {
+            let tag_owned = tag.to_string();
+            drop(arena);
+            super::custom_elements::fire_disconnected_callback(scope, node_obj, &tag_owned);
+        }
+    }
 }

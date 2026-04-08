@@ -10,10 +10,8 @@ use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 use super::helpers::{set_accessor, set_method};
 
 pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
-    // CharacterData shared properties and methods
-    super::characterdata::install(scope, proto);
-
-    // Text-specific
+    // CharacterData methods are now inherited via FunctionTemplate chain
+    // (Text → CharacterData → Node). Only install Text-specific methods here.
     set_accessor(scope, proto, "wholeText", whole_text_getter);
     set_method(scope, proto, "splitText", split_text);
 }

@@ -36,6 +36,8 @@ pub struct ElementData {
     pub script_already_started: bool,
     /// For <annotation-xml> elements with encoding="text/html" or "application/xhtml+xml".
     pub mathml_annotation_xml_integration_point: bool,
+    /// Shadow root attached via Element.attachShadow(). Points to a DocumentFragment node.
+    pub shadow_root: Option<super::NodeId>,
 }
 
 impl NodeData {
@@ -64,6 +66,7 @@ impl ElementData {
             template_contents: None,
             script_already_started: false,
             mathml_annotation_xml_integration_point: false,
+            shadow_root: None,
         }
     }
 
