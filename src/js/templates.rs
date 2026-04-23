@@ -58,10 +58,26 @@ pub struct DomTemplates {
     pub comment_function: v8::Global<v8::FunctionTemplate>,
 }
 
+/// Build and store the per-isolate DOM templates.
+///
+/// Called ONCE per isolate at worker startup (long-lived isolate model).
+/// The templates persist for the isolate's lifetime — they are pure shape
+/// definitions (FunctionTemplates / ObjectTemplates) and hold no per-render
+/// state. Each render's `v8::Context` instantiates them into fresh objects
+/// without rebuilding the templates themselves.
+pub fn install_dom_templates(isolate: &mut v8::Isolate) {
+    // v8 147 introduced pinned scopes — the `scope!` macro handles
+    // ScopeStorage + Pin + init for us. The expanded `scope` is `&mut PinnedRef`
+    // which derefs to HandleScope and ultimately Isolate, so `set_slot` works.
+    v8::scope!(let scope, isolate);
+    let templates = create_dom_templates(scope);
+    scope.set_slot(templates);
+}
+
 /// Create all DOM type templates. Called once per isolate, before context creation.
 ///
 /// Builds the spec-correct inheritance hierarchy via FunctionTemplate::inherit().
-pub fn create_dom_templates(scope: &mut v8::HandleScope<()>) -> DomTemplates {
+pub fn create_dom_templates(scope: &mut v8::PinnedRef<v8::HandleScope<()>>) -> DomTemplates {
     // ─── Node (base) ────────────────────────────────────────────────────
     let node_ft = v8::FunctionTemplate::new(scope, throwing_constructor);
     let node_class = v8::String::new(scope, "Node").unwrap();
@@ -199,7 +215,7 @@ pub fn create_dom_templates(scope: &mut v8::HandleScope<()>) -> DomTemplates {
 
 /// Constructor that always throws — DOM objects aren't user-constructible.
 fn throwing_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -209,15 +225,15 @@ fn throwing_constructor(
 }
 
 /// Create the global object template (empty — globals installed after context creation).
-pub fn create_global_template<'s>(scope: &mut v8::HandleScope<'s, ()>) -> v8::Local<'s, v8::ObjectTemplate> {
+pub fn create_global_template<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i, ()>>) -> v8::Local<'s, v8::ObjectTemplate> {
     v8::ObjectTemplate::new(scope)
 }
 
 /// Create or retrieve a JS wrapper for a DOM node.
 ///
 /// Returns cached wrapper if available (identity semantics: same node = same object).
-pub fn wrap_node<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn wrap_node<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     node_id: NodeId,
 ) -> v8::Local<'s, v8::Object> {
     // Check cache first — clone the Global handle out to avoid holding the borrow
@@ -330,7 +346,7 @@ enum NodeKind {
 
 /// Extract NodeId from a JS wrapper object's internal field.
 pub fn unwrap_node_id(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     obj: v8::Local<v8::Object>,
 ) -> Option<NodeId> {
     let data = obj.get_internal_field(scope, 0)?;
@@ -347,7 +363,7 @@ pub fn unwrap_node_id(
 ///
 /// # Safety
 /// Safe because: single-threaded, Arena outlives Isolate by stack construction.
-pub fn arena_ref<'a>(scope: &mut v8::HandleScope) -> &'a Arena {
+pub fn arena_ref<'a>(scope: &mut v8::PinnedRef<v8::HandleScope>) -> &'a Arena {
     let ptr = scope.get_slot::<ArenaPtr>().unwrap().0;
     unsafe { &*ptr }
 }
@@ -357,7 +373,7 @@ pub fn arena_ref<'a>(scope: &mut v8::HandleScope) -> &'a Arena {
 /// # Safety
 /// Safe because: single-threaded, Arena outlives Isolate by stack construction,
 /// and V8 callbacks never nest Arena mutations.
-pub fn arena_mut<'a>(scope: &mut v8::HandleScope) -> &'a mut Arena {
+pub fn arena_mut<'a>(scope: &mut v8::PinnedRef<v8::HandleScope>) -> &'a mut Arena {
     let ptr = scope.get_slot::<ArenaPtr>().unwrap().0;
     unsafe { &mut *ptr }
 }
@@ -365,9 +381,9 @@ pub fn arena_mut<'a>(scope: &mut v8::HandleScope) -> &'a mut Arena {
 // ─── Element-specific property installers ───────────────────────────────────
 
 /// Install HTMLMediaElement properties on a video/audio wrapper.
-fn install_media_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>) {
+fn install_media_element_props(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>) {
     // play() — returns resolved Promise
-    let play_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let play_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("HTMLMediaElement.play() called (SSR stub)");
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let undef = v8::undefined(scope);
@@ -378,14 +394,14 @@ fn install_media_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::O
     obj.set(scope, k.into(), play_fn.into());
 
     // pause(), load() — no-ops
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["pause", "load"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
     }
 
     // canPlayType() — returns ""
-    let cpt = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let cpt = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let empty = v8::String::new(scope, "").unwrap();
         rv.set(empty.into());
     }).unwrap();
@@ -447,14 +463,14 @@ fn install_media_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::O
         let zero_v = v8::Integer::new(scope, 0);
         let k = v8::String::new(scope, "length").unwrap();
         tr.set(scope, k.into(), zero_v.into());
-        let start_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+        let start_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
             let msg = v8::String::new(scope, "IndexSizeError").unwrap();
             let exc = v8::Exception::range_error(scope, msg);
             scope.throw_exception(exc);
         }).unwrap();
         let k = v8::String::new(scope, "start").unwrap();
         tr.set(scope, k.into(), start_fn.into());
-        let end_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+        let end_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
             let msg = v8::String::new(scope, "IndexSizeError").unwrap();
             let exc = v8::Exception::range_error(scope, msg);
             scope.throw_exception(exc);
@@ -471,7 +487,7 @@ fn install_media_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::O
     obj.set(scope, k.into(), tracks.into());
 
     // addEventListener/removeEventListener no-ops (for media events)
-    let noop2 = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop2 = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["addEventListener", "removeEventListener"] {
         let k = v8::String::new(scope, name).unwrap();
         // Only set if not already defined (from Node prototype)
@@ -484,14 +500,14 @@ fn install_media_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::O
 }
 
 /// Install HTMLFormElement properties on a form wrapper.
-fn install_form_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>) {
+fn install_form_element_props(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>) {
     // elements — empty array-like with length
     let elements = v8::Array::new(scope, 0);
     let k = v8::String::new(scope, "elements").unwrap();
     obj.set(scope, k.into(), elements.into());
 
     // submit(), reset(), requestSubmit() — no-ops
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         log::trace!("HTMLFormElement method called (no-op in SSR)");
     }).unwrap();
     for name in &["submit", "reset", "requestSubmit"] {
@@ -508,7 +524,7 @@ fn install_form_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::Ob
 }
 
 /// Install HTMLSelectElement properties on a select wrapper.
-fn install_select_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>) {
+fn install_select_element_props(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>) {
     // selectedIndex — -1
     let k = v8::String::new(scope, "selectedIndex").unwrap();
     let v = v8::Integer::new(scope, -1);
@@ -533,7 +549,7 @@ fn install_select_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::
 }
 
 /// Install HTMLSlotElement properties (assignedNodes, assignedElements).
-fn install_slot_element_props(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, _slot_id: NodeId) {
+fn install_slot_element_props(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, _slot_id: NodeId) {
     // assignedNodes() — returns light DOM children of the shadow host that match this slot
     let assigned_nodes_fn = v8::Function::new(scope, slot_assigned_nodes).unwrap();
     let k = v8::String::new(scope, "assignedNodes").unwrap();
@@ -579,7 +595,7 @@ fn find_host_for_slot(arena: &Arena, slot_id: NodeId) -> Option<NodeId> {
 }
 
 fn slot_assigned_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -614,7 +630,7 @@ fn slot_assigned_nodes(
 }
 
 fn slot_assigned_elements(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -652,7 +668,7 @@ fn slot_assigned_elements(
 /// Install template-specific properties: .content (DocumentFragment) and
 /// override innerHTML to read/write from content instead of element children.
 fn install_template_element_props(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     obj: v8::Local<v8::Object>,
     node_id: NodeId,
 ) {
@@ -715,7 +731,7 @@ fn install_template_element_props(
 
 /// template.innerHTML getter — serializes content fragment children.
 fn template_innerhtml_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -737,7 +753,7 @@ fn template_innerhtml_getter(
 
 /// template.innerHTML setter — parses HTML into content fragment.
 fn template_innerhtml_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

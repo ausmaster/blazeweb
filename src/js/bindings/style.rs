@@ -7,14 +7,14 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id};
 
 /// Install the `style` accessor on the Element prototype.
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     let key = v8::String::new(scope, "style").unwrap();
     let getter_ft = v8::FunctionTemplate::new(scope, style_getter);
     proto.set_accessor_property(key.into(), Some(getter_ft), None, v8::PropertyAttribute::NONE);
 }
 
 fn style_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -103,7 +103,7 @@ fn style_getter(
 /// Proxy get handler — reads from the target for functions, or reads
 /// live from the DOM style attribute for property values.
 fn style_proxy_get(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -187,7 +187,7 @@ fn style_proxy_get(
 /// Proxy set handler — intercepts property assignments and writes
 /// them through to the element's style attribute in the DOM.
 fn style_proxy_set(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -265,7 +265,7 @@ fn style_proxy_set(
     }
 }
 
-fn get_node_id_from_style(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
+fn get_node_id_from_style(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
     let name = v8::String::new(scope, "__nodeId").unwrap();
     let hidden_key = v8::Private::for_api(scope, Some(name));
 
@@ -310,7 +310,7 @@ fn extract_node_id_from_external(val: v8::Local<v8::Value>) -> Option<crate::dom
 }
 
 fn get_property_value(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -342,7 +342,7 @@ fn get_property_value(
 }
 
 fn set_property(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -379,7 +379,7 @@ fn set_property(
 }
 
 fn remove_property(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

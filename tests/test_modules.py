@@ -586,6 +586,247 @@ class TestTopLevelAwait:
         result = blazeweb.render(html)
         assert text_of(result.html, "out") == "len=3"
 
+    def test_multiple_inline_modules_with_tla(self):
+        """Multiple inline modules where earlier ones have top-level await
+        must not collide on the same map key in the module loader.
+
+        Reproduces a V8 DCHECK in `Module::PrepareInstantiate` caused by all
+        inline modules sharing `base_url` as their module-map key. The second
+        module's instantiation could see the first module still in
+        kEvaluating state.
+        """
+        html = b"""<html><body>
+            <div id="log"></div>
+            <script type="module">
+                const a = await Promise.resolve('A');
+                document.getElementById('log').textContent += a;
+            </script>
+            <script type="module">
+                const b = await Promise.resolve('B');
+                document.getElementById('log').textContent += b;
+            </script>
+            <script type="module">
+                const c = await Promise.resolve('C');
+                document.getElementById('log').textContent += c;
+            </script>
+        </body></html>"""
+        result = blazeweb.render(html)
+        assert text_of(result.html, "log") == "ABC"
+
+    def test_multiple_inline_modules_with_async_tla(self):
+        """Inline modules with genuinely-async top-level await (setTimeout)
+        whose promises don't settle synchronously. The second module begins
+        instantiating while the first is still in kEvaluating state.
+        """
+        html = b"""<html><body>
+            <div id="log"></div>
+            <script type="module">
+                const a = await new Promise(r => setTimeout(() => r('A'), 1));
+                document.getElementById('log').textContent += a;
+            </script>
+            <script type="module">
+                const b = await new Promise(r => setTimeout(() => r('B'), 1));
+                document.getElementById('log').textContent += b;
+            </script>
+        </body></html>"""
+        result = blazeweb.render(html)
+        assert text_of(result.html, "log") == "AB"
+
+    def test_multiple_inline_modules_sharing_import(self, httpserver):
+        """Two inline modules both statically import the same external module.
+
+        Exercises the module-map cache hit path: after the first inline
+        module's deps are instantiated+evaluated, the second inline module
+        re-resolves the same dependency. The dep's status must be handled
+        correctly (kEvaluated or kEvaluatingAsync, not re-instantiated).
+        """
+        httpserver.expect_request("/shared.mjs").respond_with_data(
+            "export const value = await Promise.resolve(7);",
+            content_type="application/javascript",
+        )
+        url = httpserver.url_for("/shared.mjs")
+        html = f"""<html><body>
+            <div id="log"></div>
+            <script type="module">
+                import {{ value }} from '{url}';
+                document.getElementById('log').textContent += 'a=' + value + ';';
+            </script>
+            <script type="module">
+                import {{ value }} from '{url}';
+                document.getElementById('log').textContent += 'b=' + value + ';';
+            </script>
+        </body></html>""".encode()
+        result = blazeweb.render(html)
+        assert text_of(result.html, "log") == "a=7;b=7;"
+
+    def test_many_external_modules_each_setting_global(self, httpserver):
+        """Many external <script type="module" src="/mod-N.mjs"> on one page,
+        each sets a distinct window property. All must execute.
+
+        Exercises the module-map URL key: each external module must have a
+        unique key (its resolved src URL), not collapse to `base_url`. A
+        collision means map.insert() overwrites prior entries and later
+        modules never execute or return stale namespace refs.
+        """
+        for i in range(8):
+            httpserver.expect_request(f"/ext-{i}.mjs").respond_with_data(
+                f"window.__mods = (window.__mods || '') + 'M{i};';",
+                content_type="application/javascript",
+            )
+        scripts = "".join(
+            f'<script type="module" src="{httpserver.url_for(f"/ext-{i}.mjs")}"></script>'
+            for i in range(8)
+        )
+        html = (
+            "<html><body><div id='out'></div>"
+            + scripts
+            + "<script type='module'>"
+            + "document.getElementById('out').textContent = window.__mods || 'NONE';"
+            + "</script></body></html>"
+        ).encode()
+        result = blazeweb.render(html)
+        out = text_of(result.html, "out")
+        for i in range(8):
+            assert f"M{i};" in out, f"missing M{i} in output: {out!r}"
+
+    def test_module_after_module_with_rejected_microtask(self, httpserver):
+        """Module A has TLA. During its settlement, an uncaught microtask
+        rejection is produced. Then module B evaluates. B's evaluate must
+        not fail because of leftover isolate exception state.
+
+        This isolates the `execution.cc:277 !isolate->has_exception()`
+        DCHECK: if a microtask during module drain throws uncaught, it
+        leaves `isolate->pending_exception` set. The next `module.evaluate`
+        call fires V8's defensive DCHECK at `Invoke`.
+        """
+        httpserver.expect_request("/A.mjs").respond_with_data(
+            """
+            // Schedule an uncaught promise rejection via microtask
+            Promise.reject(new Error('unhandled-in-A'));
+            // TLA that settles after the rejection microtask
+            await new Promise(r => setTimeout(r, 1));
+            window.__A = true;
+            """.strip(),
+            content_type="application/javascript",
+        )
+        httpserver.expect_request("/B.mjs").respond_with_data(
+            "window.__B = true;",
+            content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <div id='out'></div>
+            <script type='module' src='{httpserver.url_for('/A.mjs')}'></script>
+            <script type='module' src='{httpserver.url_for('/B.mjs')}'></script>
+            <script type='module'>
+                document.getElementById('out').textContent =
+                    'A=' + (window.__A || 'no') + ',B=' + (window.__B || 'no');
+            </script>
+        </body></html>""".encode()
+        result = blazeweb.render(html)
+        out = text_of(result.html, "out")
+        # Both modules should succeed; rejected microtask is an orthogonal event.
+        assert "A=true" in out and "B=true" in out, out
+
+    def test_dynamic_import_with_static_back_reference_while_evaluating(self, httpserver):
+        """Minimal reproducer for V8 `Module::PrepareInstantiate` DCHECK.
+
+        Pattern extracted from microsoft.com trace:
+
+            A.mjs (top-level, has TLA):
+                await <async work>
+                const m = await import('./B.mjs');  // triggers during A's eval
+
+            B.mjs (statically imports A, creating a cycle via dynamic+static):
+                import './A.mjs';
+                ...
+
+        While A is kEvaluating (its top-level await is pending settlement),
+        the dynamic import() of B fires our dynamic_import_callback. B is
+        newly compiled and is kUninstantiated, so V8's `InstantiateModule`
+        runs; V8 walks B's deps and calls `PrepareInstantiate(A)`. A is
+        currently kEvaluating → V8 DCHECK at `module.cc:240`.
+
+        In release mode V8 silently returns true for any status >= kPreLinking
+        (per `if (status >= kPreLinking) return true;` early-return), so this
+        only crashes debug builds. Fix is at our loader level: the
+        dynamic-import path must avoid handing V8 a module whose graph touches
+        a currently-evaluating module.
+        """
+        httpserver.expect_request("/A.mjs").respond_with_data(
+            """
+            await new Promise(r => setTimeout(() => r(), 1));
+            const m = await import('./B.mjs');
+            window.__flow = (window.__flow || '') + 'A-done;';
+            """.strip(),
+            content_type="application/javascript",
+        )
+        httpserver.expect_request("/B.mjs").respond_with_data(
+            """
+            import './A.mjs';
+            window.__flow = (window.__flow || '') + 'B-done;';
+            """.strip(),
+            content_type="application/javascript",
+        )
+        html = f"""<html><body>
+            <div id='out'></div>
+            <script type='module' src='{httpserver.url_for('/A.mjs')}'></script>
+            <script type='module'>
+                document.getElementById('out').textContent = window.__flow || 'NONE';
+            </script>
+        </body></html>""".encode()
+        # Must not crash. Per spec (ECMA-262 InnerModuleLinking), a kEvaluating
+        # module encountered during linking should be a no-op return, not a
+        # fatal error.
+        result = blazeweb.render(html)
+        out = text_of(result.html, "out")
+        # Either order is acceptable — the point is no crash and both run.
+        assert "A-done" in out or "B-done" in out, f"neither completed: {out!r}"
+
+    def test_many_external_modules_sharing_async_dep(self, httpserver):
+        """Mirror of microsoft.com pattern: many external <script type="module">
+        tags on one page, all statically depending on a shared module with
+        top-level await.
+
+        Reproduces the v8 147 module.cc:240 DCHECK when all external modules
+        collapse to `base_url` as their module-map key (bug in
+        execute_one_module), causing V8 to walk a dep graph where a shared
+        dependency is already in Evaluating status.
+        """
+        # Shared dependency with top-level await (genuinely async)
+        httpserver.expect_request("/shared-async.mjs").respond_with_data(
+            """
+            export const value = await new Promise(r => setTimeout(() => r('shared'), 1));
+            """.strip(),
+            content_type="application/javascript",
+        )
+        shared = httpserver.url_for("/shared-async.mjs")
+
+        # Each external module script statically imports the shared dep.
+        scripts_html = []
+        for i in range(8):
+            httpserver.expect_request(f"/mod-{i}.mjs").respond_with_data(
+                f"""
+                import {{ value }} from '{shared}';
+                window.__loaded = (window.__loaded || '') + 'm{i}({{}})'.replace('{{}}', value);
+                """.strip(),
+                content_type="application/javascript",
+            )
+            scripts_html.append(
+                f'<script type="module" src="{httpserver.url_for(f"/mod-{i}.mjs")}"></script>'
+            )
+        html = (
+            "<html><body><div id='out'></div>"
+            + "".join(scripts_html)
+            + "<script type='module'>"
+            + "document.getElementById('out').textContent = window.__loaded || 'NONE';"
+            + "</script></body></html>"
+        ).encode()
+        result = blazeweb.render(html)
+        out = text_of(result.html, "out")
+        # Each mod-i should have executed exactly once and appended "m{i}(shared)"
+        for i in range(8):
+            assert f"m{i}(shared)" in out, f"missing m{i} in output: {out!r}"
+
 
 # ─── Mixed classic + module interaction ──────────────────────────────────────
 

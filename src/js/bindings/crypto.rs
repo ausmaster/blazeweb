@@ -1,7 +1,7 @@
 /// Crypto API: getRandomValues, randomUUID, and subtle stub.
 
 /// Install the `crypto` object on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let crypto = v8::Object::new(scope);
     let grv = v8::Function::new(scope, crypto_get_random_values).unwrap();
     let k = v8::String::new(scope, "getRandomValues").unwrap();
@@ -18,7 +18,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 }
 
 fn crypto_get_random_values(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -41,7 +41,7 @@ fn crypto_get_random_values(
 }
 
 fn crypto_random_uuid(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

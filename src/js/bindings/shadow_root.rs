@@ -16,7 +16,7 @@ const VALID_SHADOW_HOSTS: &[&str] = &[
 ];
 
 /// Install the ShadowRoot global constructor (throws Illegal constructor).
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     // ShadowRoot constructor — we can't use class extends because DocumentFragment
     // isn't a real JS class we can extend. Instead, create a constructor function
     // and set its prototype chain manually after we create the shadow root instance.
@@ -47,7 +47,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 /// Implementation of Element.attachShadow(options).
 /// Called from element_geometry.rs.
 pub fn attach_shadow(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -184,7 +184,7 @@ pub fn attach_shadow(
 
 /// Element.shadowRoot getter — returns shadow root for open mode, null for closed.
 pub fn shadow_root_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -220,7 +220,7 @@ pub fn shadow_root_getter(
 // ─── innerHTML on ShadowRoot ────────────────────────────────────────────────
 
 fn install_innerhtml(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     shadow_obj: v8::Local<v8::Object>,
     _shadow_id: crate::dom::NodeId,
 ) {
@@ -257,7 +257,7 @@ fn install_innerhtml(
 }
 
 fn innerhtml_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -273,7 +273,7 @@ fn innerhtml_getter(
 }
 
 fn innerhtml_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -299,7 +299,7 @@ fn innerhtml_setter(
 
 // ─── querySelector/querySelectorAll on ShadowRoot ───────────────────────────
 
-fn install_query_selectors(scope: &mut v8::HandleScope, shadow_obj: v8::Local<v8::Object>) {
+fn install_query_selectors(scope: &mut v8::PinnedRef<v8::HandleScope>, shadow_obj: v8::Local<v8::Object>) {
     let qs = v8::Function::new(scope, shadow_query_selector).unwrap();
     let k = v8::String::new(scope, "querySelector").unwrap();
     shadow_obj.set(scope, k.into(), qs.into());
@@ -310,7 +310,7 @@ fn install_query_selectors(scope: &mut v8::HandleScope, shadow_obj: v8::Local<v8
 }
 
 fn shadow_query_selector(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -329,7 +329,7 @@ fn shadow_query_selector(
 }
 
 fn shadow_query_selector_all(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -350,14 +350,14 @@ fn shadow_query_selector_all(
 
 // ─── getElementById on ShadowRoot ───────────────────────────────────────────
 
-fn install_get_element_by_id(scope: &mut v8::HandleScope, shadow_obj: v8::Local<v8::Object>) {
+fn install_get_element_by_id(scope: &mut v8::PinnedRef<v8::HandleScope>, shadow_obj: v8::Local<v8::Object>) {
     let func = v8::Function::new(scope, shadow_get_element_by_id).unwrap();
     let k = v8::String::new(scope, "getElementById").unwrap();
     shadow_obj.set(scope, k.into(), func.into());
 }
 
 fn shadow_get_element_by_id(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -389,7 +389,7 @@ fn shadow_get_element_by_id(
 
 // ─── children (HTMLCollection) on ShadowRoot ────────────────────────────────
 
-fn install_children(scope: &mut v8::HandleScope, shadow_obj: v8::Local<v8::Object>) {
+fn install_children(scope: &mut v8::PinnedRef<v8::HandleScope>, shadow_obj: v8::Local<v8::Object>) {
     // children getter — element children only
     let getter = v8::Function::new(scope, shadow_children_getter).unwrap();
 
@@ -418,7 +418,7 @@ fn install_children(scope: &mut v8::HandleScope, shadow_obj: v8::Local<v8::Objec
 }
 
 fn shadow_children_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

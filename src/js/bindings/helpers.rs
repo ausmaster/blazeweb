@@ -4,7 +4,7 @@
 /// functions that were previously copy-pasted across element.rs, document.rs, node.rs, etc.
 
 pub fn set_accessor(
-    scope: &mut v8::HandleScope<()>,
+    scope: &mut v8::PinnedRef<v8::HandleScope<()>>,
     proto: &v8::Local<v8::ObjectTemplate>,
     name: &str,
     getter: impl v8::MapFnTo<v8::FunctionCallback>,
@@ -15,7 +15,7 @@ pub fn set_accessor(
 }
 
 pub fn set_accessor_with_setter(
-    scope: &mut v8::HandleScope<()>,
+    scope: &mut v8::PinnedRef<v8::HandleScope<()>>,
     proto: &v8::Local<v8::ObjectTemplate>,
     name: &str,
     getter: impl v8::MapFnTo<v8::FunctionCallback>,
@@ -28,7 +28,7 @@ pub fn set_accessor_with_setter(
 }
 
 pub fn set_method(
-    scope: &mut v8::HandleScope<()>,
+    scope: &mut v8::PinnedRef<v8::HandleScope<()>>,
     proto: &v8::Local<v8::ObjectTemplate>,
     name: &str,
     callback: impl v8::MapFnTo<v8::FunctionCallback>,

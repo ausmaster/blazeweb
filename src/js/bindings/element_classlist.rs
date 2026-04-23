@@ -4,7 +4,7 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id};
 
 pub(super) fn class_list_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -81,7 +81,7 @@ pub(super) fn class_list_getter(
     rv.set(obj.into());
 }
 
-pub(super) fn get_classlist_node_id(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
+pub(super) fn get_classlist_node_id(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
     let pk_name = v8::String::new(scope, "__nodeId").unwrap();
     let hidden_key = v8::Private::for_api(scope, Some(pk_name));
     let val = this.get_private(scope, hidden_key)?;
@@ -91,7 +91,7 @@ pub(super) fn get_classlist_node_id(scope: &mut v8::HandleScope, this: v8::Local
     Some(unsafe { *ptr })
 }
 
-pub(super) fn classlist_add(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+pub(super) fn classlist_add(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let mut tokens = Vec::new();
     for i in 0..args.length() {
@@ -110,7 +110,7 @@ pub(super) fn classlist_add(scope: &mut v8::HandleScope, args: v8::FunctionCallb
     }
 }
 
-pub(super) fn classlist_remove(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+pub(super) fn classlist_remove(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let mut tokens = Vec::new();
     for i in 0..args.length() {
@@ -130,7 +130,7 @@ pub(super) fn classlist_remove(scope: &mut v8::HandleScope, args: v8::FunctionCa
     }
 }
 
-pub(super) fn classlist_toggle(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub(super) fn classlist_toggle(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let token = args.get(0).to_rust_string_lossy(scope);
     let force = if args.length() > 1 && !args.get(1).is_undefined() {
@@ -171,7 +171,7 @@ pub(super) fn classlist_toggle(scope: &mut v8::HandleScope, args: v8::FunctionCa
     }
 }
 
-pub(super) fn classlist_contains(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub(super) fn classlist_contains(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let token = args.get(0).to_rust_string_lossy(scope);
     let arena = arena_ref(scope);
@@ -183,7 +183,7 @@ pub(super) fn classlist_contains(scope: &mut v8::HandleScope, args: v8::Function
     rv.set(v8::Boolean::new(scope, has).into());
 }
 
-pub(super) fn classlist_item(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub(super) fn classlist_item(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let index = args.get(0).int32_value(scope).unwrap_or(0) as usize;
     let arena = arena_ref(scope);
@@ -197,7 +197,7 @@ pub(super) fn classlist_item(scope: &mut v8::HandleScope, args: v8::FunctionCall
     rv.set(v8::null(scope).into());
 }
 
-pub(super) fn classlist_replace(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub(super) fn classlist_replace(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let old_token = args.get(0).to_rust_string_lossy(scope);
     let new_token = args.get(1).to_rust_string_lossy(scope);
@@ -218,7 +218,7 @@ pub(super) fn classlist_replace(scope: &mut v8::HandleScope, args: v8::FunctionC
     }
 }
 
-pub(super) fn classlist_to_string(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub(super) fn classlist_to_string(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(node_id) = get_classlist_node_id(scope, args.this()) else { return };
     let arena = arena_ref(scope);
     let cls = if let NodeData::Element(data) = &arena.nodes[node_id].data {

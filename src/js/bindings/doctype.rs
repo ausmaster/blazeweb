@@ -7,14 +7,14 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_ref, unwrap_node_id};
 use super::helpers::set_accessor;
 
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     set_accessor(scope, proto, "name", name_getter);
     set_accessor(scope, proto, "publicId", public_id_getter);
     set_accessor(scope, proto, "systemId", system_id_getter);
 }
 
 fn name_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -30,7 +30,7 @@ fn name_getter(
 }
 
 fn public_id_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -46,7 +46,7 @@ fn public_id_getter(
 }
 
 fn system_id_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

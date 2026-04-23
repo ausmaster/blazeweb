@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-fn run_js(scope: &mut v8::HandleScope, script: &str, label: &str, _timeout_secs: u64) -> bool {
+fn run_js(scope: &mut v8::PinnedRef<v8::HandleScope>, script: &str, label: &str, _timeout_secs: u64) -> bool {
     eprint!("[test] {}: ", label);
     let start = Instant::now();
 
@@ -50,7 +50,7 @@ fn main() {
     let params = v8::CreateParams::default()
         .heap_limits(0, 512 * 1024 * 1024);
     let isolate = &mut v8::Isolate::new(params);
-    let handle_scope = &mut v8::HandleScope::new(isolate);
+    v8::scope!(let handle_scope, isolate);
     let context = v8::Context::new(handle_scope, Default::default());
     let scope = &mut v8::ContextScope::new(handle_scope, context);
     eprintln!("[init] Context created OK\n");

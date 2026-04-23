@@ -155,8 +155,8 @@ fn entry_to_key(arena: &crate::dom::Arena, entry: &PathEntry, event_type: &str) 
 
 // ─── V8 property helpers ─────────────────────────────────────────────────────
 
-fn set_prop<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn set_prop<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     obj: v8::Local<v8::Object>,
     key: &str,
     val: v8::Local<'s, v8::Value>,
@@ -165,14 +165,14 @@ fn set_prop<'s>(
     obj.set(scope, k.into(), val);
 }
 
-fn get_bool(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str) -> bool {
+fn get_bool(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str) -> bool {
     let k = v8::String::new(scope, key).unwrap();
     obj.get(scope, k.into())
         .map(|v| v.boolean_value(scope))
         .unwrap_or(false)
 }
 
-fn get_string(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str) -> String {
+fn get_string(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str) -> String {
     let k = v8::String::new(scope, key).unwrap();
     obj.get(scope, k.into())
         .map(|v| v.to_rust_string_lossy(scope))
@@ -184,7 +184,7 @@ fn get_string(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str
 /// Install working propagation flags and methods on an event object.
 /// Called at the start of dispatch — overwrites any existing noop methods.
 /// Also called by event constructors so stopPropagation works pre-dispatch.
-pub fn install_propagation_flags(scope: &mut v8::HandleScope, event: v8::Local<v8::Object>) {
+pub fn install_propagation_flags(scope: &mut v8::PinnedRef<v8::HandleScope>, event: v8::Local<v8::Object>) {
     // Internal flags
     let false_val = v8::Boolean::new(scope, false);
     set_prop(scope, event, "__stopProp", false_val.into());
@@ -195,7 +195,7 @@ pub fn install_propagation_flags(scope: &mut v8::HandleScope, event: v8::Local<v
     set_prop(scope, event, "eventPhase", zero.into());
 
     // Working stopPropagation
-    let stop_prop = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let stop_prop = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let t = v8::Boolean::new(scope, true);
         set_prop(scope, this, "__stopProp", t.into());
@@ -203,7 +203,7 @@ pub fn install_propagation_flags(scope: &mut v8::HandleScope, event: v8::Local<v
     set_prop(scope, event, "stopPropagation", stop_prop.into());
 
     // Working stopImmediatePropagation
-    let stop_imm = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let stop_imm = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let t = v8::Boolean::new(scope, true);
         set_prop(scope, this, "__stopProp", t.into());
@@ -214,7 +214,7 @@ pub fn install_propagation_flags(scope: &mut v8::HandleScope, event: v8::Local<v
     // composedPath — initially returns []; updated during dispatch
     let empty_arr = v8::Array::new(scope, 0);
     set_prop(scope, event, "__composedPath", empty_arr.into());
-    let composed_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let composed_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let this = args.this();
         let k = v8::String::new(scope, "__composedPath").unwrap();
         match this.get(scope, k.into()) {
@@ -229,8 +229,8 @@ pub fn install_propagation_flags(scope: &mut v8::HandleScope, event: v8::Local<v
 }
 
 /// Build the composedPath V8 array from the path entries.
-fn build_composed_path_array<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn build_composed_path_array<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     path: &[PathEntry],
 ) -> v8::Local<'s, v8::Array> {
     let arr = v8::Array::new(scope, path.len() as i32);
@@ -252,7 +252,7 @@ fn build_composed_path_array<'s>(
 /// Invoke listeners for a given key and phase.
 /// Returns true if stopImmediatePropagation was called.
 fn invoke_listeners(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     event: v8::Local<v8::Object>,
     key: &ListenerKey,
     phase: i32,
@@ -290,7 +290,7 @@ fn invoke_listeners(
         }
 
         // Call the listener
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let func = v8::Local::new(try_catch, callback);
         let undefined = v8::undefined(try_catch);
         let evt = v8::Local::new(try_catch, event);
@@ -308,7 +308,7 @@ fn invoke_listeners(
 
 /// Set event.currentTarget to the V8 wrapper for a path entry.
 fn set_current_target(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     event: v8::Local<v8::Object>,
     entry: &PathEntry,
 ) {
@@ -329,7 +329,7 @@ fn set_current_target(
 ///
 /// Returns true if the event was NOT canceled (i.e., !defaultPrevented).
 pub fn dispatch_event_at_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     event: v8::Local<v8::Object>,
     target_id: NodeId,
 ) -> bool {
@@ -418,7 +418,7 @@ pub fn dispatch_event_at_node(
 
 /// Dispatch an event at the Window level (no bubbling path — Window is the target).
 pub fn dispatch_event_at_window(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     event: v8::Local<v8::Object>,
 ) -> bool {
     install_propagation_flags(scope, event);
@@ -456,8 +456,8 @@ pub fn dispatch_event_at_window(
 // ─── Event object creation ───────────────────────────────────────────────────
 
 /// Create a minimal Event object for internal use (e.g., DOMContentLoaded).
-fn create_event_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn create_event_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     event_type: &str,
     bubbles: bool,
     cancelable: bool,
@@ -487,7 +487,7 @@ fn create_event_object<'s>(
     set_prop(scope, obj, "eventPhase", zero.into());
 
     // preventDefault
-    let prevent = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let prevent = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         if get_bool(scope, this, "cancelable") {
             let t = v8::Boolean::new(scope, true);
@@ -506,7 +506,7 @@ fn create_event_object<'s>(
 
 /// Fire DOMContentLoaded event on document and window listeners.
 /// Returns collected error messages.
-pub fn fire_dom_content_loaded(scope: &mut v8::HandleScope) -> Vec<String> {
+pub fn fire_dom_content_loaded(scope: &mut v8::PinnedRef<v8::HandleScope>) -> Vec<String> {
     let mut errors = Vec::new();
 
     let event = create_event_object(scope, "DOMContentLoaded", true, false);
@@ -526,7 +526,7 @@ pub fn fire_dom_content_loaded(scope: &mut v8::HandleScope) -> Vec<String> {
 
     // Fire document listeners first
     for (callback, _once) in doc_listeners {
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let func = v8::Local::new(try_catch, &callback);
         let undefined = v8::undefined(try_catch);
         let event_local = v8::Local::new(try_catch, event);
@@ -539,7 +539,7 @@ pub fn fire_dom_content_loaded(scope: &mut v8::HandleScope) -> Vec<String> {
 
     // Fire window listeners
     for (callback, _once) in win_listeners {
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let func = v8::Local::new(try_catch, &callback);
         let undefined = v8::undefined(try_catch);
         let event_local = v8::Local::new(try_catch, event);
@@ -557,7 +557,7 @@ pub fn fire_dom_content_loaded(scope: &mut v8::HandleScope) -> Vec<String> {
 
 /// Node.addEventListener() callback.
 pub fn add_event_listener_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -589,7 +589,7 @@ pub fn add_event_listener_callback(
 
 /// Node.removeEventListener() callback.
 pub fn remove_event_listener_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -619,7 +619,7 @@ pub fn remove_event_listener_callback(
 
 /// Node.dispatchEvent(event) — full propagation dispatch.
 pub fn dispatch_event_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -641,7 +641,7 @@ pub fn dispatch_event_callback(
 
 /// Window.addEventListener() callback.
 pub fn window_add_event_listener(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -662,7 +662,7 @@ pub fn window_add_event_listener(
 
 /// Window.removeEventListener() callback.
 pub fn window_remove_event_listener(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -681,7 +681,7 @@ pub fn window_remove_event_listener(
 
 /// Window.dispatchEvent(event) — dispatch at window level.
 pub fn window_dispatch_event_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -696,7 +696,7 @@ pub fn window_dispatch_event_callback(
     rv.set(v8::Boolean::new(scope, result).into());
 }
 
-fn parse_listener_options(scope: &mut v8::HandleScope, args: &v8::FunctionCallbackArguments) -> (bool, bool) {
+fn parse_listener_options(scope: &mut v8::PinnedRef<v8::HandleScope>, args: &v8::FunctionCallbackArguments) -> (bool, bool) {
     let opts_arg = args.get(2);
     if opts_arg.is_boolean() {
         return (opts_arg.boolean_value(scope), false);

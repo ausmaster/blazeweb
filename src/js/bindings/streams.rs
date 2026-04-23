@@ -6,7 +6,7 @@
 //! second reader.read() returns {value: undefined, done: true}.
 
 /// Install ReadableStream constructor on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let rs_ctor = v8::Function::new(scope, readable_stream_constructor).unwrap();
     let key = v8::String::new(scope, "ReadableStream").unwrap();
     global.set(scope, key.into(), rs_ctor.into());
@@ -15,8 +15,8 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 
 /// Create a ReadableStream wrapping pre-fetched body bytes.
 /// Used by fetch response to set response.body.
-pub fn create_from_bytes<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn create_from_bytes<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     body: &[u8],
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -53,7 +53,7 @@ pub fn create_from_bytes<'s>(
     obj.set(scope, k.into(), get_reader.into());
 
     // cancel() method — returns resolved promise
-    let cancel_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let cancel_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let undef = v8::undefined(scope);
@@ -64,7 +64,7 @@ pub fn create_from_bytes<'s>(
     obj.set(scope, k.into(), cancel_fn.into());
 
     // pipeTo / pipeThrough / tee stubs
-    let noop_promise = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let noop_promise = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let undef = v8::undefined(scope);
@@ -75,7 +75,7 @@ pub fn create_from_bytes<'s>(
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop_promise.into());
     }
-    let tee_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let tee_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Array::new(scope, 0).into());
     }).unwrap();
@@ -88,7 +88,7 @@ pub fn create_from_bytes<'s>(
 
 /// ReadableStream constructor: `new ReadableStream(underlyingSource?)`
 fn readable_stream_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -118,8 +118,8 @@ fn readable_stream_constructor(
 }
 
 /// Create a ReadableStreamDefaultController for the start() callback
-fn create_controller<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn create_controller<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     stream: &v8::Local<v8::Object>,
 ) -> v8::Local<'s, v8::Object> {
     let controller = v8::Object::new(scope);
@@ -130,7 +130,7 @@ fn create_controller<'s>(
     controller.set_private(scope, stream_key, (*stream).into());
 
     // enqueue(chunk)
-    let enqueue_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let enqueue_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let chunk = args.get(0);
@@ -149,7 +149,7 @@ fn create_controller<'s>(
     controller.set(scope, k.into(), enqueue_fn.into());
 
     // close() — mark stream as closed
-    let close_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let close_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let pk = v8::String::new(scope, "__stream").unwrap();
@@ -168,7 +168,7 @@ fn create_controller<'s>(
     controller.set(scope, k.into(), close_fn.into());
 
     // error() — stub
-    let error_fn = v8::Function::new(scope, |_: &mut v8::HandleScope,
+    let error_fn = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
     }).unwrap();
     let k = v8::String::new(scope, "error").unwrap();
@@ -179,7 +179,7 @@ fn create_controller<'s>(
 
 /// Get locked state of stream
 fn stream_locked_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -195,7 +195,7 @@ fn stream_locked_getter(
 
 /// getReader() — returns a ReadableStreamDefaultReader
 fn stream_get_reader(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -226,7 +226,7 @@ fn stream_get_reader(
     reader.set(scope, k.into(), read_fn.into());
 
     // cancel() — returns resolved promise
-    let cancel_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let cancel_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let undef = v8::undefined(scope);
@@ -258,7 +258,7 @@ fn stream_get_reader(
 /// reader.read() — first call returns {value: data, done: false},
 /// subsequent calls return {value: undefined, done: true}
 fn reader_read(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -326,7 +326,7 @@ fn reader_read(
 
 /// reader.releaseLock() — unlock the stream
 fn reader_release_lock(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

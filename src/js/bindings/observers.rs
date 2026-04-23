@@ -6,7 +6,7 @@ use crate::js::mutation_observer::{MutationObserverState, ObserverOptions};
 use crate::js::templates::unwrap_node_id;
 
 /// Install observer constructors on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let mo = v8::Function::new(scope, mutation_observer_constructor).unwrap();
     let key = v8::String::new(scope, "MutationObserver").unwrap();
     global.set(scope, key.into(), mo.into());
@@ -36,7 +36,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 // ─── MutationObserver (real implementation) ──────────────────────────────────
 
 fn mutation_observer_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -88,7 +88,7 @@ fn mutation_observer_constructor(
 }
 
 /// Extract observer index from a MO JS object via private property.
-fn get_observer_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<usize> {
+fn get_observer_idx(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<usize> {
     let name = v8::String::new(scope, "__mo_idx").unwrap();
     let idx_key = v8::Private::for_api(scope, Some(name));
     let val = this.get_private(scope, idx_key)?;
@@ -96,7 +96,7 @@ fn get_observer_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) ->
 }
 
 fn mo_observe(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -187,7 +187,7 @@ fn mo_observe(
 }
 
 fn mo_disconnect(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -198,7 +198,7 @@ fn mo_disconnect(
 }
 
 fn mo_take_records(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -214,7 +214,7 @@ fn mo_take_records(
 // ─── Option parsing helpers ──────────────────────────────────────────────────
 
 fn get_bool_opt(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     obj: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<bool> {
@@ -227,7 +227,7 @@ fn get_bool_opt(
 }
 
 fn get_string_array_opt(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     obj: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<Vec<String>> {
@@ -275,7 +275,7 @@ impl IntersectionObserverState {
 /// Fire all pending IntersectionObserver callbacks.
 /// Each observed target is reported as fully visible (isIntersecting: true, ratio: 1.0).
 /// Returns any JS errors from callback execution.
-pub fn drain_intersection_observers(scope: &mut v8::HandleScope) -> Vec<String> {
+pub fn drain_intersection_observers(scope: &mut v8::PinnedRef<v8::HandleScope>) -> Vec<String> {
     let mut errors = Vec::new();
 
     // Collect pending observers (callback + targets) — must release slot borrow first
@@ -322,7 +322,7 @@ pub fn drain_intersection_observers(scope: &mut v8::HandleScope) -> Vec<String> 
         );
 
         // Call callback(entries, observer)
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let undefined = v8::undefined(try_catch);
         let args: &[v8::Local<v8::Value>] = &[entries.into(), observer.into()];
         if callback.call(try_catch, undefined.into(), args).is_none() {
@@ -344,7 +344,7 @@ pub fn drain_intersection_observers(scope: &mut v8::HandleScope) -> Vec<String> 
 
 /// Build a single IntersectionObserverEntry for a target node.
 /// Uses real layout data from Taffy to compute bounding rect and intersection.
-fn build_io_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
+fn build_io_entry<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
     let arena = crate::js::templates::arena_ref(scope);
     let layout = &arena.nodes[node_id].taffy_layout;
     let (abs_x, abs_y) = arena.absolute_position(node_id);
@@ -421,8 +421,8 @@ fn build_io_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::L
 }
 
 /// Create a DOMRectReadOnly-like object.
-fn make_dom_rect<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn make_dom_rect<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     x: f64,
     y: f64,
     width: f64,
@@ -447,7 +447,7 @@ fn make_dom_rect<'s>(
 }
 
 fn intersection_observer_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -552,7 +552,7 @@ fn intersection_observer_constructor(
     rv.set(obj.into());
 }
 
-fn get_io_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<usize> {
+fn get_io_idx(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<usize> {
     let name = v8::String::new(scope, "__io_idx").unwrap();
     let idx_key = v8::Private::for_api(scope, Some(name));
     let val = this.get_private(scope, idx_key)?;
@@ -560,7 +560,7 @@ fn get_io_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Optio
 }
 
 fn io_observe(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -582,7 +582,7 @@ fn io_observe(
 }
 
 fn io_unobserve(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -601,7 +601,7 @@ fn io_unobserve(
 }
 
 fn io_disconnect(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -616,7 +616,7 @@ fn io_disconnect(
 }
 
 fn io_take_records(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -648,7 +648,7 @@ impl ResizeObserverState {
 
 /// Fire all pending ResizeObserver callbacks.
 /// Each observed target is reported with a default 1920x1080 content box.
-pub fn drain_resize_observers(scope: &mut v8::HandleScope) -> Vec<String> {
+pub fn drain_resize_observers(scope: &mut v8::PinnedRef<v8::HandleScope>) -> Vec<String> {
     let mut errors = Vec::new();
 
     let pending: Vec<(v8::Global<v8::Function>, v8::Global<v8::Object>, Vec<NodeId>)> = {
@@ -689,7 +689,7 @@ pub fn drain_resize_observers(scope: &mut v8::HandleScope) -> Vec<String> {
         }
         log::debug!("ResizeObserver callback: {} entries (real layout geometry)", targets.len());
 
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let undefined = v8::undefined(try_catch);
         let args: &[v8::Local<v8::Value>] = &[entries.into(), observer.into()];
         if callback.call(try_catch, undefined.into(), args).is_none() {
@@ -711,7 +711,7 @@ pub fn drain_resize_observers(scope: &mut v8::HandleScope) -> Vec<String> {
 
 /// Build a single ResizeObserverEntry for a target node.
 /// Uses real layout data from Taffy for content/border box dimensions.
-fn build_ro_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
+fn build_ro_entry<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
     let arena = crate::js::templates::arena_ref(scope);
     let layout = &arena.nodes[node_id].taffy_layout;
 
@@ -767,8 +767,8 @@ fn build_ro_entry<'s>(scope: &mut v8::HandleScope<'s>, node_id: NodeId) -> v8::L
 }
 
 /// Create a ResizeObserverSize object with inlineSize and blockSize.
-fn make_ro_size<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn make_ro_size<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     inline_size: f64,
     block_size: f64,
 ) -> v8::Local<'s, v8::Object> {
@@ -783,7 +783,7 @@ fn make_ro_size<'s>(
 }
 
 fn resize_observer_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -836,7 +836,7 @@ fn resize_observer_constructor(
     rv.set(obj.into());
 }
 
-fn get_ro_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<usize> {
+fn get_ro_idx(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<usize> {
     let name = v8::String::new(scope, "__ro_idx").unwrap();
     let idx_key = v8::Private::for_api(scope, Some(name));
     let val = this.get_private(scope, idx_key)?;
@@ -844,7 +844,7 @@ fn get_ro_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Optio
 }
 
 fn ro_observe(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -866,7 +866,7 @@ fn ro_observe(
 }
 
 fn ro_unobserve(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -885,7 +885,7 @@ fn ro_unobserve(
 }
 
 fn ro_disconnect(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1003,7 +1003,7 @@ impl PerformanceObserverState {
 }
 
 /// Fire all pending PerformanceObserver callbacks.
-pub fn drain_performance_observers(scope: &mut v8::HandleScope) -> Vec<String> {
+pub fn drain_performance_observers(scope: &mut v8::PinnedRef<v8::HandleScope>) -> Vec<String> {
     let mut errors = Vec::new();
 
     let pending: Vec<(usize, v8::Global<v8::Function>, v8::Global<v8::Object>, Vec<PerformanceEntry>)> = {
@@ -1035,7 +1035,7 @@ pub fn drain_performance_observers(scope: &mut v8::HandleScope) -> Vec<String> {
         // Build PerformanceObserverEntryList
         let entry_list = build_performance_entry_list(scope, entries);
 
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let undefined = v8::undefined(try_catch);
         let args: &[v8::Local<v8::Value>] = &[entry_list.into(), observer.into()];
         if callback.call(try_catch, undefined.into(), args).is_none() {
@@ -1051,8 +1051,8 @@ pub fn drain_performance_observers(scope: &mut v8::HandleScope) -> Vec<String> {
 }
 
 /// Build a PerformanceObserverEntryList JS object from entries.
-fn build_performance_entry_list<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn build_performance_entry_list<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     entries: &[PerformanceEntry],
 ) -> v8::Local<'s, v8::Object> {
     let list = v8::Object::new(scope);
@@ -1082,8 +1082,8 @@ fn build_performance_entry_list<'s>(
 }
 
 /// Build an array of PerformanceEntry JS objects.
-pub fn build_performance_entries_array<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn build_performance_entries_array<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     entries: &[PerformanceEntry],
 ) -> v8::Local<'s, v8::Array> {
     let arr = v8::Array::new(scope, entries.len() as i32);
@@ -1095,8 +1095,8 @@ pub fn build_performance_entries_array<'s>(
 }
 
 /// Build a single PerformanceEntry JS object.
-fn build_performance_entry_obj<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn build_performance_entry_obj<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     entry: &PerformanceEntry,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -1118,7 +1118,7 @@ fn build_performance_entry_obj<'s>(
     obj.set(scope, k.into(), v.into());
 
     // toJSON()
-    let to_json = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let to_json = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let this = args.this();
         let result = v8::Object::new(scope);
         for prop_name in &["name", "entryType", "startTime", "duration"] {
@@ -1136,8 +1136,8 @@ fn build_performance_entry_obj<'s>(
 }
 
 /// Get the private entries array from a PerformanceObserverEntryList object.
-fn get_po_entries<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn get_po_entries<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     list: v8::Local<v8::Object>,
 ) -> Option<v8::Local<'s, v8::Array>> {
     let priv_name = v8::String::new(scope, "__po_entries").unwrap();
@@ -1151,7 +1151,7 @@ fn get_po_entries<'s>(
 }
 
 fn po_list_get_entries(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1164,7 +1164,7 @@ fn po_list_get_entries(
 }
 
 fn po_list_get_entries_by_type(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1196,7 +1196,7 @@ fn po_list_get_entries_by_type(
 }
 
 fn po_list_get_entries_by_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1238,7 +1238,7 @@ fn po_list_get_entries_by_name(
 }
 
 fn performance_observer_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1295,7 +1295,7 @@ fn performance_observer_constructor(
     rv.set(obj.into());
 }
 
-fn get_po_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Option<usize> {
+fn get_po_idx(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Option<usize> {
     let name = v8::String::new(scope, "__po_idx").unwrap();
     let idx_key = v8::Private::for_api(scope, Some(name));
     let val = this.get_private(scope, idx_key)?;
@@ -1303,7 +1303,7 @@ fn get_po_idx(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Optio
 }
 
 fn po_observe(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1381,7 +1381,7 @@ fn po_observe(
 }
 
 fn po_disconnect(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1397,7 +1397,7 @@ fn po_disconnect(
 }
 
 fn po_take_records(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

@@ -5,8 +5,8 @@ pub struct BaseUrl(pub Option<String>);
 
 /// Create a location object. If base_url is available, parse it;
 /// otherwise provide empty-string defaults.
-pub fn create_location_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn create_location_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
 
@@ -41,14 +41,14 @@ pub fn create_location_object<'s>(
     set_str(scope, obj, "origin", &origin);
 
     // No-op methods
-    let noop = v8::Function::new(scope, |_scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
     for name in &["assign", "replace", "reload"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
     }
 
     // toString returns href — read it back from the object
-    let to_string = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let to_string = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let this = args.this();
         let k = v8::String::new(scope, "href").unwrap();
         if let Some(val) = this.get(scope, k.into()) {
@@ -61,7 +61,7 @@ pub fn create_location_object<'s>(
     obj
 }
 
-fn set_str(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str) {
+fn set_str(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::String::new(scope, val).unwrap();
     obj.set(scope, k.into(), v.into());

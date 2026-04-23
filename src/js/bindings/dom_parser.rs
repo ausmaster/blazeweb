@@ -1,14 +1,14 @@
 /// DOMParser constructor and parseFromString.
 
 /// Install the DOMParser constructor on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let dp_ctor = v8::Function::new(scope, dom_parser_constructor).unwrap();
     let key = v8::String::new(scope, "DOMParser").unwrap();
     global.set(scope, key.into(), dp_ctor.into());
 }
 
 fn dom_parser_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -20,7 +20,7 @@ fn dom_parser_constructor(
 }
 
 fn dom_parser_parse_from_string(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -51,13 +51,13 @@ fn dom_parser_parse_from_string(
     doc.set(scope, k.into(), body.into());
 
     // querySelector stub
-    let qs = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let qs = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::null(scope).into());
     }).unwrap();
     let k = v8::String::new(scope, "querySelector").unwrap();
     doc.set(scope, k.into(), qs.into());
     let k = v8::String::new(scope, "querySelectorAll").unwrap();
-    let qsa = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let qsa = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Array::new(scope, 0).into());
     }).unwrap();
     doc.set(scope, k.into(), qsa.into());

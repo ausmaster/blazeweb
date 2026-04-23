@@ -4,7 +4,7 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 
 pub(super) fn insert_adjacent_html(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -71,7 +71,7 @@ pub(super) fn insert_adjacent_html(
 }
 
 pub(super) fn insert_adjacent_element(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -119,7 +119,7 @@ pub(super) fn insert_adjacent_element(
 }
 
 pub(super) fn get_bounding_client_rect(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -137,7 +137,7 @@ pub(super) fn get_bounding_client_rect(
     );
 
     let obj = v8::Object::new(scope);
-    let set = |s: &mut v8::HandleScope, o: v8::Local<v8::Object>, k: &str, v: f64| {
+    let set = |s: &mut v8::PinnedRef<v8::HandleScope>, o: v8::Local<v8::Object>, k: &str, v: f64| {
         let key = v8::String::new(s, k).unwrap();
         let val = v8::Number::new(s, v);
         o.set(s, key.into(), val.into());
@@ -154,7 +154,7 @@ pub(super) fn get_bounding_client_rect(
 }
 
 pub(super) fn offset_width_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -165,7 +165,7 @@ pub(super) fn offset_width_getter(
 }
 
 pub(super) fn offset_height_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -176,7 +176,7 @@ pub(super) fn offset_height_getter(
 }
 
 pub(super) fn client_width_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -188,7 +188,7 @@ pub(super) fn client_width_getter(
 }
 
 pub(super) fn client_height_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -200,7 +200,7 @@ pub(super) fn client_height_getter(
 }
 
 pub(super) fn scroll_width_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -213,7 +213,7 @@ pub(super) fn scroll_width_getter(
 }
 
 pub(super) fn scroll_height_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -226,7 +226,7 @@ pub(super) fn scroll_height_getter(
 }
 
 pub(super) fn offset_top_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -237,7 +237,7 @@ pub(super) fn offset_top_getter(
 }
 
 pub(super) fn offset_left_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -249,7 +249,7 @@ pub(super) fn offset_left_getter(
 
 /// Zero getter for properties that don't have layout values (scrollTop, scrollLeft).
 pub(super) fn geometry_zero_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -257,14 +257,14 @@ pub(super) fn geometry_zero_getter(
 }
 
 pub(super) fn element_noop(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
 }
 
 pub(super) fn get_client_rects(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -279,7 +279,7 @@ pub(super) fn get_client_rects(
 
     let arr = v8::Array::new(scope, 1);
     let rect = v8::Object::new(scope);
-    let set = |s: &mut v8::HandleScope, o: v8::Local<v8::Object>, k: &str, v: f64| {
+    let set = |s: &mut v8::PinnedRef<v8::HandleScope>, o: v8::Local<v8::Object>, k: &str, v: f64| {
         let key = v8::String::new(s, k).unwrap();
         let val = v8::Number::new(s, v);
         o.set(s, key.into(), val.into());
@@ -297,7 +297,7 @@ pub(super) fn get_client_rects(
 }
 
 pub(super) fn get_attribute_names(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -316,7 +316,7 @@ pub(super) fn get_attribute_names(
 }
 
 pub(super) fn has_attributes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -331,7 +331,7 @@ pub(super) fn has_attributes(
 }
 
 pub(super) fn toggle_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -369,7 +369,7 @@ pub(super) fn toggle_attribute(
 }
 
 pub(super) fn get_attribute_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -396,7 +396,7 @@ pub(super) fn get_attribute_node(
 }
 
 pub(super) fn attach_shadow(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     rv: v8::ReturnValue,
 ) {
@@ -404,7 +404,7 @@ pub(super) fn attach_shadow(
 }
 
 pub(super) fn element_animate(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -417,7 +417,7 @@ pub(super) fn element_animate(
     resolver.resolve(scope, undef.into());
     let promise = resolver.get_promise(scope);
     obj.set(scope, k.into(), promise.into());
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["play", "pause", "cancel", "finish", "reverse"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
@@ -426,7 +426,7 @@ pub(super) fn element_animate(
 }
 
 pub(super) fn element_get_animations(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -434,7 +434,7 @@ pub(super) fn element_get_animations(
 }
 
 pub(super) fn element_after(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -466,7 +466,7 @@ pub(super) fn element_after(
 }
 
 pub(super) fn element_before(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -492,7 +492,7 @@ pub(super) fn element_before(
 }
 
 pub(super) fn element_replace_with(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -523,7 +523,7 @@ pub(super) fn element_replace_with(
 }
 
 pub(super) fn insert_adjacent_text(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

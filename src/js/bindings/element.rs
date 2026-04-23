@@ -19,7 +19,7 @@ use super::element_geometry::{
     scroll_width_getter, scroll_height_getter, offset_top_getter, offset_left_getter,
 };
 
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     // Readonly accessors
     set_accessor(scope, proto, "tagName", tag_name_getter);
     set_accessor(scope, proto, "localName", local_name_getter);
@@ -148,7 +148,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
 /// Used by DocumentFragment so that template.content.querySelector() works.
 /// Per spec, ParentNode is a mixin on Document, DocumentFragment, and Element.
 pub fn install_parent_node_mixin(
-    scope: &mut v8::HandleScope<()>,
+    scope: &mut v8::PinnedRef<v8::HandleScope<()>>,
     proto: &v8::Local<v8::ObjectTemplate>,
 ) {
     set_method(scope, proto, "querySelector", element_query_selector);
@@ -162,7 +162,7 @@ pub fn install_parent_node_mixin(
 // ─── Accessors ────────────────────────────────────────────────────────────────
 
 fn tag_name_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -182,7 +182,7 @@ fn tag_name_getter(
 }
 
 fn id_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -196,7 +196,7 @@ fn id_getter(
 }
 
 fn id_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -211,7 +211,7 @@ fn id_setter(
 }
 
 fn class_name_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -225,7 +225,7 @@ fn class_name_getter(
 }
 
 fn class_name_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -240,7 +240,7 @@ fn class_name_setter(
 }
 
 fn inner_html_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -257,7 +257,7 @@ fn inner_html_getter(
 }
 
 fn inner_html_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -301,7 +301,7 @@ fn inner_html_setter(
 }
 
 fn outer_html_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -314,7 +314,7 @@ fn outer_html_getter(
 }
 
 fn children_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -335,7 +335,7 @@ fn children_getter(
 }
 
 fn child_element_count_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -349,7 +349,7 @@ fn child_element_count_getter(
 }
 
 fn first_element_child_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -365,7 +365,7 @@ fn first_element_child_getter(
 }
 
 fn last_element_child_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -384,7 +384,7 @@ fn last_element_child_getter(
 }
 
 fn next_element_sibling_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -402,7 +402,7 @@ fn next_element_sibling_getter(
 }
 
 fn previous_element_sibling_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -422,7 +422,7 @@ fn previous_element_sibling_getter(
 // ─── Methods ──────────────────────────────────────────────────────────────────
 
 fn get_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -441,7 +441,7 @@ fn get_attribute(
 }
 
 fn set_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -473,7 +473,7 @@ fn set_attribute(
 }
 
 fn remove_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -504,7 +504,7 @@ fn remove_attribute(
 }
 
 fn has_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -520,7 +520,7 @@ fn has_attribute(
 }
 
 fn get_attribute_ns(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -542,7 +542,7 @@ fn get_attribute_ns(
 }
 
 fn set_attribute_ns(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -565,7 +565,7 @@ fn set_attribute_ns(
 }
 
 fn remove_attribute_ns(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -578,7 +578,7 @@ fn remove_attribute_ns(
 }
 
 fn has_attribute_ns(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -594,7 +594,7 @@ fn has_attribute_ns(
 }
 
 fn remove(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -606,7 +606,7 @@ fn remove(
 }
 
 fn matches_selector(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -624,7 +624,7 @@ fn matches_selector(
 }
 
 fn closest_selector(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -643,7 +643,7 @@ fn closest_selector(
 }
 
 fn element_query_selector(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -657,7 +657,7 @@ fn element_query_selector(
 }
 
 fn element_query_selector_all(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -682,7 +682,7 @@ fn element_query_selector_all(
 }
 
 fn element_get_elements_by_tag_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -701,7 +701,7 @@ fn element_get_elements_by_tag_name(
 }
 
 fn element_get_elements_by_class_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -728,8 +728,8 @@ fn element_get_elements_by_class_name(
 
 /// Add item(index) and namedItem(name) methods to an array to make it
 /// behave like an HTMLCollection per the DOM spec.
-pub(super) fn add_item_method(scope: &mut v8::HandleScope, arr: v8::Local<v8::Array>) {
-    let item_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+pub(super) fn add_item_method(scope: &mut v8::PinnedRef<v8::HandleScope>, arr: v8::Local<v8::Array>) {
+    let item_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let this = args.this();
         let index = args.get(0).uint32_value(scope).unwrap_or(0);
@@ -745,7 +745,7 @@ pub(super) fn add_item_method(scope: &mut v8::HandleScope, arr: v8::Local<v8::Ar
     let key = v8::String::new(scope, "item").unwrap();
     arr.set(scope, key.into(), item_fn.into());
 
-    let named_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let named_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         // namedItem stub — return null (rarely used)
         rv.set(v8::null(scope).into());
@@ -796,7 +796,7 @@ fn serialize_node(arena: &crate::dom::Arena, id: crate::dom::NodeId, output: &mu
 // ─── Batch 4: New element functions ───────────────────────────────────────────
 
 fn local_name_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -809,7 +809,7 @@ fn local_name_getter(
 }
 
 fn namespace_uri_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -830,7 +830,7 @@ fn namespace_uri_getter(
 }
 
 fn null_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -838,7 +838,7 @@ fn null_getter(
 }
 
 fn empty_string_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -846,7 +846,7 @@ fn empty_string_getter(
 }
 
 fn attributes_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -878,7 +878,7 @@ fn attributes_getter(
         let v = v8::Integer::new(scope, data.attrs.len() as i32);
         obj.set(scope, k.into(), v.into());
         // getNamedItem method
-        let gni = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+        let gni = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
             let this = args.this();
             let name = args.get(0).to_rust_string_lossy(scope);
             let k = v8::String::new(scope, &name).unwrap();
@@ -897,7 +897,7 @@ fn attributes_getter(
 }
 
 fn inner_text_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -932,7 +932,7 @@ fn collect_text_content(arena: &crate::dom::Arena, id: crate::dom::NodeId, out: 
 }
 
 fn inner_text_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -948,7 +948,7 @@ fn inner_text_setter(
 }
 
 fn hidden_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -963,7 +963,7 @@ fn hidden_getter(
 }
 
 fn hidden_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -980,7 +980,7 @@ fn hidden_setter(
 }
 
 fn tab_index_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -997,7 +997,7 @@ fn tab_index_getter(
 }
 
 fn tab_index_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1018,7 +1018,7 @@ fn tab_index_setter(
 macro_rules! reflecting_string_accessor {
     ($getter:ident, $setter:ident, $attr:literal) => {
         fn $getter(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinnedRef<v8::HandleScope>,
             args: v8::FunctionCallbackArguments,
             mut rv: v8::ReturnValue,
         ) {
@@ -1032,7 +1032,7 @@ macro_rules! reflecting_string_accessor {
         }
 
         fn $setter(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinnedRef<v8::HandleScope>,
             args: v8::FunctionCallbackArguments,
             _rv: v8::ReturnValue,
         ) {
@@ -1057,7 +1057,7 @@ reflecting_string_accessor!(reflecting_placeholder_getter, reflecting_placeholde
 macro_rules! reflecting_boolean_accessor {
     ($getter:ident, $setter:ident, $attr:literal) => {
         fn $getter(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinnedRef<v8::HandleScope>,
             args: v8::FunctionCallbackArguments,
             mut rv: v8::ReturnValue,
         ) {
@@ -1070,7 +1070,7 @@ macro_rules! reflecting_boolean_accessor {
         }
 
         fn $setter(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinnedRef<v8::HandleScope>,
             args: v8::FunctionCallbackArguments,
             _rv: v8::ReturnValue,
         ) {
@@ -1103,7 +1103,7 @@ reflecting_boolean_accessor!(reflecting_translate_getter, reflecting_translate_s
 
 // contentEditable — reflects "contenteditable" attribute but as string "true"/"false"/"inherit"
 fn content_editable_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1121,7 +1121,7 @@ fn content_editable_getter(
 }
 
 fn content_editable_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1142,7 +1142,7 @@ fn content_editable_setter(
 }
 
 fn is_content_editable_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1186,7 +1186,7 @@ pub fn clone_across_arenas(
 // ─── Form constraint validation stubs ───────────────────────────────────────
 
 fn check_validity(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1194,7 +1194,7 @@ fn check_validity(
 }
 
 fn set_custom_validity_noop(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1202,7 +1202,7 @@ fn set_custom_validity_noop(
 }
 
 fn validity_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1223,7 +1223,7 @@ fn validity_getter(
 }
 
 fn validation_message_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1232,7 +1232,7 @@ fn validation_message_getter(
 }
 
 fn will_validate_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

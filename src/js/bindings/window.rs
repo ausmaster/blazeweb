@@ -7,7 +7,7 @@ use crate::js::templates::{arena_ref, wrap_node};
 
 /// Install global objects on the context's global object.
 /// Must be called after context creation (inside ContextScope).
-pub fn install_globals(scope: &mut v8::HandleScope) {
+pub fn install_globals(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let context = scope.get_current_context();
     let global = context.global(scope);
 
@@ -154,7 +154,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     let ric = v8::Function::new(scope, request_idle_callback).unwrap();
     let key = v8::String::new(scope, "requestIdleCallback").unwrap();
     global.set(scope, key.into(), ric.into());
-    let cic = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let cic = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let id = args.get(0).int32_value(scope).unwrap_or(0) as u32;
         if let Some(queue) = scope.get_slot_mut::<crate::js::timers::TimerQueue>() {
             queue.remove(id);
@@ -164,7 +164,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     global.set(scope, key.into(), cic.into());
 
     // scrollTo / scrollBy / scroll — no-op
-    let scroll_noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let scroll_noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["scrollTo", "scrollBy", "scroll"] {
         let key = v8::String::new(scope, name).unwrap();
         global.set(scope, key.into(), scroll_noop.into());
@@ -172,21 +172,21 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
 
     // ─── Window dialog/messaging methods ────────────────────────────────
     // postMessage — no-op (SSR has no cross-origin messaging)
-    let pm = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let pm = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         log::trace!("window.postMessage() called (no-op in SSR)");
     }).unwrap();
     let key = v8::String::new(scope, "postMessage").unwrap();
     global.set(scope, key.into(), pm.into());
 
     // alert — no-op
-    let alert_fn = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let alert_fn = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         log::trace!("window.alert() called (no-op in SSR)");
     }).unwrap();
     let key = v8::String::new(scope, "alert").unwrap();
     global.set(scope, key.into(), alert_fn.into());
 
     // confirm — returns false (SSR: no user interaction)
-    let confirm_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let confirm_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("window.confirm() called (returns false in SSR)");
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
@@ -194,7 +194,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     global.set(scope, key.into(), confirm_fn.into());
 
     // prompt — returns null (SSR: no user interaction)
-    let prompt_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let prompt_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("window.prompt() called (returns null in SSR)");
         rv.set(v8::null(scope).into());
     }).unwrap();
@@ -202,7 +202,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     global.set(scope, key.into(), prompt_fn.into());
 
     // open — returns null (SSR: no popup windows)
-    let open_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let open_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("window.open() called (returns null in SSR)");
         rv.set(v8::null(scope).into());
     }).unwrap();
@@ -210,7 +210,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     global.set(scope, key.into(), open_fn.into());
 
     // close / focus / blur / print / stop — no-op
-    let win_noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let win_noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["close", "focus", "blur", "print", "stop", "find"] {
         let key = v8::String::new(scope, name).unwrap();
         global.set(scope, key.into(), win_noop.into());
@@ -232,7 +232,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     super::shadow_root::install(scope, global);
 
     // Dimension properties
-    let set_int = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, name: &str, val: i32| {
+    let set_int = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, name: &str, val: i32| {
         let k = v8::String::new(scope, name).unwrap();
         let v = v8::Integer::new(scope, val);
         obj.set(scope, k.into(), v.into());
@@ -325,7 +325,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     vv.set(scope, k.into(), v.into());
     set_int(scope, vv, "offsetLeft", 0);
     set_int(scope, vv, "offsetTop", 0);
-    let vv_noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let vv_noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["addEventListener", "removeEventListener"] {
         let k = v8::String::new(scope, name).unwrap();
         vv.set(scope, k.into(), vv_noop.into());
@@ -444,7 +444,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
             ($scope:expr, $global:expr, $name:expr, $proto:expr) => {{
                 let key = v8::String::new($scope, $name).unwrap();
                 if $global.get($scope, key.into()).map(|v| v.is_undefined()).unwrap_or(true) {
-                    let ctor = v8::Function::new($scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+                    let ctor = v8::Function::new($scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
                     let pk = v8::String::new($scope, "prototype").unwrap();
                     ctor.set($scope, pk.into(), $proto);
                     $global.set($scope, key.into(), ctor.into());
@@ -504,7 +504,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
 
         // ── Window constructor (special: prototype is the global itself) ──
         {
-            let ctor = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+            let ctor = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
             let pk = v8::String::new(scope, "prototype").unwrap();
             ctor.set(scope, pk.into(), global.into());
             let key = v8::String::new(scope, "Window").unwrap();
@@ -536,7 +536,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
 
     // ─── No-op constructors for non-DOM types ───────────────────────────
 
-    let noop_ctor = v8::Function::new(scope, |_scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
+    let noop_ctor = v8::Function::new(scope, |_scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
     for name in &[
         "File", "FileReader",
         "Request", "Response",
@@ -558,9 +558,9 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
     // NodeFilter constants — WHATWG DOM §6 NodeFilter interface
     // Must be a function (constructor) for `typeof NodeFilter === "function"` checks
     {
-        let nf = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+        let nf = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
         let nf_obj: v8::Local<v8::Object> = nf.into();
-        let set_const = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, name: &str, val: u32| {
+        let set_const = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, name: &str, val: u32| {
             let k = v8::String::new(scope, name).unwrap();
             let v = v8::Integer::new(scope, val as i32);
             obj.set(scope, k.into(), v.into());
@@ -589,7 +589,7 @@ pub fn install_globals(scope: &mut v8::HandleScope) {
 // ─── Window-specific functions ───────────────────────────────────────────────
 
 fn get_computed_style(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -629,7 +629,7 @@ fn get_computed_style(
     }
 
     // getPropertyValue(prop) — reads from this object's properties (inline styles + defaults)
-    let gpv = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gpv = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         if args.length() < 1 { return; }
         let prop = args.get(0).to_rust_string_lossy(scope);
         let this = args.this();
@@ -657,7 +657,7 @@ fn get_computed_style(
     obj.set(scope, k.into(), gpv.into());
 
     // setProperty / removeProperty — no-op
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     let k = v8::String::new(scope, "setProperty").unwrap();
     obj.set(scope, k.into(), noop.into());
     let k = v8::String::new(scope, "removeProperty").unwrap();
@@ -779,7 +779,7 @@ fn css_to_camel(prop: &str) -> String {
 }
 
 fn queue_microtask(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -791,7 +791,7 @@ fn queue_microtask(
 }
 
 fn match_media(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -808,7 +808,7 @@ fn match_media(
     let v = v8::String::new(scope, &query).unwrap();
     obj.set(scope, k.into(), v.into());
 
-    let noop = v8::Function::new(scope, |_scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
     for name in &["addEventListener", "removeEventListener", "addListener", "removeListener", "dispatchEvent"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
@@ -873,7 +873,7 @@ fn extract_px_value(query: &str, prop: &str) -> Option<f64> {
 }
 
 fn request_idle_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -890,7 +890,7 @@ fn request_idle_callback(
 }
 
 fn get_selection(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -901,12 +901,12 @@ fn get_selection(
     let k = v8::String::new(scope, "isCollapsed").unwrap();
     let v = v8::Boolean::new(scope, true);
     obj.set(scope, k.into(), v.into());
-    let to_str = v8::Function::new(scope, |scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let to_str = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::String::new(scope, "").unwrap().into());
     }).unwrap();
     let k = v8::String::new(scope, "toString").unwrap();
     obj.set(scope, k.into(), to_str.into());
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["removeAllRanges", "addRange", "collapse", "collapseToStart", "collapseToEnd",
                    "extend", "setBaseAndExtent", "selectAllChildren", "deleteFromDocument",
                    "getRangeAt", "containsNode"] {
@@ -920,7 +920,7 @@ fn get_selection(
 
 /// Monotonic time counter for performance.now() — starts at 0 for each render.
 fn perf_now(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -930,7 +930,7 @@ fn perf_now(
 }
 
 fn perf_mark(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -978,7 +978,7 @@ fn perf_mark(
 }
 
 fn perf_measure(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1076,7 +1076,7 @@ fn perf_measure(
 }
 
 fn perf_get_entries(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1089,7 +1089,7 @@ fn perf_get_entries(
 }
 
 fn perf_get_entries_by_type(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1103,7 +1103,7 @@ fn perf_get_entries_by_type(
 }
 
 fn perf_get_entries_by_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1122,7 +1122,7 @@ fn perf_get_entries_by_name(
 }
 
 fn perf_clear_marks(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1137,7 +1137,7 @@ fn perf_clear_marks(
 }
 
 fn perf_clear_measures(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1152,8 +1152,8 @@ fn perf_clear_measures(
 }
 
 /// Install CSSStyleSheet constructor and document.adoptedStyleSheets.
-fn install_cssstylesheet(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
-    let ctor = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+fn install_cssstylesheet(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
+    let ctor = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let sheet = v8::Object::new(scope);
         // cssRules — empty array
@@ -1161,14 +1161,14 @@ fn install_cssstylesheet(scope: &mut v8::HandleScope, global: v8::Local<v8::Obje
         let arr = v8::Array::new(scope, 0);
         sheet.set(scope, k.into(), arr.into());
         // replaceSync(text) — accepts CSS text, no-op for SSR
-        let replace_sync = v8::Function::new(scope, |_: &mut v8::HandleScope,
+        let replace_sync = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>,
             _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
             log::trace!("CSSStyleSheet.replaceSync() called");
         }).unwrap();
         let k = v8::String::new(scope, "replaceSync").unwrap();
         sheet.set(scope, k.into(), replace_sync.into());
         // replace(text) — returns resolved promise
-        let replace = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+        let replace = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
             _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
             let resolver = v8::PromiseResolver::new(scope).unwrap();
             let this = v8::undefined(scope);
@@ -1178,13 +1178,13 @@ fn install_cssstylesheet(scope: &mut v8::HandleScope, global: v8::Local<v8::Obje
         let k = v8::String::new(scope, "replace").unwrap();
         sheet.set(scope, k.into(), replace.into());
         // insertRule / deleteRule — no-ops returning 0
-        let insert_rule = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+        let insert_rule = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
             _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
             rv.set(v8::Integer::new(scope, 0).into());
         }).unwrap();
         let k = v8::String::new(scope, "insertRule").unwrap();
         sheet.set(scope, k.into(), insert_rule.into());
-        let delete_rule = v8::Function::new(scope, |_: &mut v8::HandleScope,
+        let delete_rule = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>,
             _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
         let k = v8::String::new(scope, "deleteRule").unwrap();
         sheet.set(scope, k.into(), delete_rule.into());
@@ -1207,7 +1207,7 @@ fn install_cssstylesheet(scope: &mut v8::HandleScope, global: v8::Local<v8::Obje
 }
 
 fn structured_clone(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1223,11 +1223,11 @@ fn structured_clone(
 
 // ─── CSS global object ──────────────────────────────────────────────────────
 
-fn install_css_global(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+fn install_css_global(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let css = v8::Object::new(scope);
 
     // CSS.supports(prop, val) or CSS.supports(conditionText) — returns false for SSR
-    let supports_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let supports_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("CSS.supports() called (returns false in SSR)");
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
@@ -1251,7 +1251,7 @@ fn install_css_global(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>
 
 /// CSS.escape() per https://drafts.csswg.org/cssom/#the-css.escape()-method
 fn css_escape(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1285,13 +1285,13 @@ fn css_escape(
 
 // ─── FileList constructor ───────────────────────────────────────────────────
 
-fn install_filelist(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
-    let ctor = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+fn install_filelist(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
+    let ctor = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let obj = v8::Object::new(scope);
         let k = v8::String::new(scope, "length").unwrap();
         let v = v8::Integer::new(scope, 0);
         obj.set(scope, k.into(), v.into());
-        let item_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+        let item_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
             rv.set(v8::null(scope).into());
         }).unwrap();
         let k = v8::String::new(scope, "item").unwrap();
@@ -1305,8 +1305,8 @@ fn install_filelist(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) 
 
 // ─── DOMException constructor ───────────────────────────────────────────────
 
-fn install_dom_exception(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
-    let ctor = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+fn install_dom_exception(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
+    let ctor = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let obj = v8::Object::new(scope);
         // message (first arg, default "")
         let msg = if args.length() > 0 && !args.get(0).is_undefined() {
@@ -1366,7 +1366,7 @@ fn install_dom_exception(scope: &mut v8::HandleScope, global: v8::Local<v8::Obje
 
 // ─── History with real state tracking ───────────────────────────────────────
 
-fn install_history(scope: &mut v8::HandleScope) {
+fn install_history(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let source = r##"
     (function() {
         "use strict";
@@ -1437,7 +1437,7 @@ fn install_history(scope: &mut v8::HandleScope) {
 
 // ─── Phase 7: Geometry constructors ─────────────────────────────────────────
 
-fn install_geometry_constructors(scope: &mut v8::HandleScope) {
+fn install_geometry_constructors(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let source = r#"
     (function(g) {
         function DOMRect(x,y,w,h) {
@@ -1488,7 +1488,7 @@ fn install_geometry_constructors(scope: &mut v8::HandleScope) {
 
 // ─── Phase 7: WebSocket constructor ─────────────────────────────────────────
 
-fn install_websocket_constructor(scope: &mut v8::HandleScope) {
+fn install_websocket_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let source = r#"
     (function(g) {
         function WebSocket(url, protocols) {
@@ -1520,7 +1520,7 @@ fn install_websocket_constructor(scope: &mut v8::HandleScope) {
 
 // ─── Phase 7: BroadcastChannel constructor ──────────────────────────────────
 
-fn install_broadcast_channel(scope: &mut v8::HandleScope) {
+fn install_broadcast_channel(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let source = r#"
     (function(g) {
         function BroadcastChannel(name) {
@@ -1541,7 +1541,7 @@ fn install_broadcast_channel(scope: &mut v8::HandleScope) {
 
 // ─── Phase 7: document.fonts + document state ───────────────────────────────
 
-fn install_document_fonts_and_state(scope: &mut v8::HandleScope) {
+fn install_document_fonts_and_state(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let source = r#"
     (function() {
         var doc = self.document;
@@ -1587,7 +1587,7 @@ fn install_document_fonts_and_state(scope: &mut v8::HandleScope) {
 }
 
 /// Helper to compile and run a JS snippet in the current context.
-pub(super) fn run_js(scope: &mut v8::HandleScope, source: &str, label: &str) {
+pub(super) fn run_js(scope: &mut v8::PinnedRef<v8::HandleScope>, source: &str, label: &str) {
     let source_str = v8::String::new(scope, source).unwrap();
     let name = v8::String::new(scope, label).unwrap();
     let origin = v8::ScriptOrigin::new(

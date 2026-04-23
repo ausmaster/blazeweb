@@ -1,6 +1,7 @@
 use crate::dom;
 use crate::error::EngineError;
 use crate::js;
+use crate::js::executor::JsPool;
 use crate::net::fetch::FetchContext;
 use crate::net::request::Request;
 
@@ -19,12 +20,23 @@ pub fn render(html: &[u8], base_url: Option<&str>) -> Result<RenderOutput, Engin
 }
 
 /// Render with a caller-supplied FetchContext (e.g. from a Client with persistent cache).
+/// JS execution routes through the process-global default pool.
 pub fn render_with_context(
     html: &[u8],
     base_url: Option<&str>,
     context: &FetchContext,
 ) -> Result<RenderOutput, EngineError> {
-    render_inner(html, base_url, context)
+    render_inner(html, base_url, context, None)
+}
+
+/// Render using a caller-supplied JS executor pool (e.g. a Client's per-instance pool).
+pub fn render_with_pool(
+    html: &[u8],
+    base_url: Option<&str>,
+    context: &FetchContext,
+    pool: &JsPool,
+) -> Result<RenderOutput, EngineError> {
+    render_inner(html, base_url, context, Some(pool))
 }
 
 /// Fetch a URL and render it: fetch document → parse → execute JS → serialize.
@@ -36,8 +48,26 @@ pub fn fetch(url: &str) -> Result<RenderOutput, EngineError> {
     fetch_with_context(url, &context)
 }
 
+/// Fetch a URL and render with a caller-supplied JS pool (Client's per-instance pool).
+pub fn fetch_with_pool(
+    url: &str,
+    context: &FetchContext,
+    pool: &JsPool,
+) -> Result<RenderOutput, EngineError> {
+    fetch_inner(url, context, Some(pool))
+}
+
 /// Fetch a URL and render with a caller-supplied FetchContext.
+/// JS execution routes through the process-global default pool.
 pub fn fetch_with_context(url: &str, context: &FetchContext) -> Result<RenderOutput, EngineError> {
+    fetch_inner(url, context, None)
+}
+
+fn fetch_inner(
+    url: &str,
+    context: &FetchContext,
+    pool: Option<&JsPool>,
+) -> Result<RenderOutput, EngineError> {
     let parsed = url::Url::parse(url).map_err(|e| EngineError::Network {
         url: url.into(),
         reason: format!("invalid URL: {e}"),
@@ -67,13 +97,14 @@ pub fn fetch_with_context(url: &str, context: &FetchContext) -> Result<RenderOut
     // Use the same context for the render (shares cache/cookies with the document fetch)
     let mut ctx = context.clone();
     ctx.base_url = Some(final_url.clone());
-    render_inner(html.as_bytes(), Some(&final_url), &ctx)
+    render_inner(html.as_bytes(), Some(&final_url), &ctx, pool)
 }
 
 fn render_inner(
     html: &[u8],
     base_url: Option<&str>,
     context: &FetchContext,
+    pool: Option<&JsPool>,
 ) -> Result<RenderOutput, EngineError> {
     let t0 = std::time::Instant::now();
     let url_label = base_url.unwrap_or("<inline>");
@@ -85,8 +116,12 @@ fn render_inner(
     let mut arena = dom::parse_document(html_str);
     log::debug!("[{}] parsed in {:?}", url_label, t0.elapsed());
 
-    // Step 2: Execute scripts (skips V8 init if no scripts found)
-    let js_errors = js::runtime::execute_scripts(&mut arena, base_url, context)?;
+    // Step 2: Execute scripts (skips V8 dispatch if no scripts found).
+    // Routes through the caller-supplied pool when present (Client's pool),
+    // otherwise the process-global default pool.
+    let js_errors = js::runtime::execute_scripts_via_pool(
+        &mut arena, base_url, context, pool,
+    )?;
 
     // Step 3: Resolve CSS styles via Stylo (after scripts may have mutated DOM)
     crate::css::resolve::resolve_styles(&mut arena);

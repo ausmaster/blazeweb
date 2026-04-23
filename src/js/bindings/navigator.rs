@@ -1,7 +1,7 @@
 /// window.navigator — minimal stub for SSR compatibility.
 
-pub fn create_navigator_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn create_navigator_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
 
@@ -32,14 +32,14 @@ pub fn create_navigator_object<'s>(
     obj.set(scope, k.into(), v.into());
 
     // No-op methods
-    let noop = v8::Function::new(scope, |_scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {}).unwrap();
     for name in &["sendBeacon", "vibrate"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
     }
 
     // javaEnabled() method
-    let java_enabled = v8::Function::new(scope, |scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let java_enabled = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
     let k = v8::String::new(scope, "javaEnabled").unwrap();
@@ -49,7 +49,7 @@ pub fn create_navigator_object<'s>(
     let sw = v8::Object::new(scope);
 
     // register() — returns resolved promise
-    let register_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let register_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         log::trace!("navigator.serviceWorker.register() called (no-op in SSR)");
         let resolver = v8::PromiseResolver::new(scope).unwrap();
@@ -83,7 +83,7 @@ pub fn create_navigator_object<'s>(
 
     // clipboard
     let clipboard = v8::Object::new(scope);
-    let write_text_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let write_text_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
@@ -93,7 +93,7 @@ pub fn create_navigator_object<'s>(
         let k = v8::String::new(scope, name).unwrap();
         clipboard.set(scope, k.into(), write_text_fn.into());
     }
-    let read_text_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let read_text_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         // Reject — clipboard not available in SSR
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let msg = v8::String::new(scope, "NotAllowedError: Clipboard read not available in SSR").unwrap();
@@ -110,7 +110,7 @@ pub fn create_navigator_object<'s>(
 
     // permissions
     let permissions = v8::Object::new(scope);
-    let query_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let query_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let result = v8::Object::new(scope);
         let k = v8::String::new(scope, "state").unwrap();
@@ -129,7 +129,7 @@ pub fn create_navigator_object<'s>(
 
     // mediaDevices
     let media_devices = v8::Object::new(scope);
-    let enum_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let enum_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let arr = v8::Array::new(scope, 0);
         resolver.resolve(scope, arr.into());
@@ -137,7 +137,7 @@ pub fn create_navigator_object<'s>(
     }).unwrap();
     let k = v8::String::new(scope, "enumerateDevices").unwrap();
     media_devices.set(scope, k.into(), enum_fn.into());
-    let gum_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gum_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let msg = v8::String::new(scope, "NotAllowedError: getUserMedia not available in SSR").unwrap();
         let err = v8::Exception::error(scope, msg);
@@ -162,7 +162,7 @@ pub fn create_navigator_object<'s>(
         connection.set(scope, k.into(), v.into());
     }
     set_bool(scope, connection, "saveData", false);
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     let k = v8::String::new(scope, "addEventListener").unwrap();
     connection.set(scope, k.into(), noop.into());
     let k = v8::String::new(scope, "removeEventListener").unwrap();
@@ -172,7 +172,7 @@ pub fn create_navigator_object<'s>(
 
     // geolocation
     let geolocation = v8::Object::new(scope);
-    let geo_noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let geo_noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         log::trace!("navigator.geolocation method called (no-op in SSR)");
     }).unwrap();
     for name in &["getCurrentPosition", "watchPosition", "clearWatch"] {
@@ -191,7 +191,7 @@ pub fn create_navigator_object<'s>(
 
     // storage (StorageManager)
     let storage = v8::Object::new(scope);
-    let estimate_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let estimate_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let result = v8::Object::new(scope);
         let k = v8::String::new(scope, "quota").unwrap();
@@ -205,7 +205,7 @@ pub fn create_navigator_object<'s>(
     }).unwrap();
     let k = v8::String::new(scope, "estimate").unwrap();
     storage.set(scope, k.into(), estimate_fn.into());
-    let persist_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let persist_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let val = v8::Boolean::new(scope, false);
         resolver.resolve(scope, val.into());
@@ -218,7 +218,7 @@ pub fn create_navigator_object<'s>(
 
     // credentials
     let credentials = v8::Object::new(scope);
-    let cred_null_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let cred_null_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let null = v8::null(scope);
         resolver.resolve(scope, null.into());
@@ -233,7 +233,7 @@ pub fn create_navigator_object<'s>(
 
     // locks (Web Locks API)
     let locks = v8::Object::new(scope);
-    let lock_noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let lock_noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     let k = v8::String::new(scope, "request").unwrap();
     locks.set(scope, k.into(), lock_noop.into());
     let k = v8::String::new(scope, "query").unwrap();
@@ -265,13 +265,13 @@ pub fn create_navigator_object<'s>(
     obj
 }
 
-fn set_str(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str) {
+fn set_str(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::String::new(scope, val).unwrap();
     obj.set(scope, k.into(), v.into());
 }
 
-fn set_bool(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: bool) {
+fn set_bool(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: bool) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::Boolean::new(scope, val);
     obj.set(scope, k.into(), v.into());

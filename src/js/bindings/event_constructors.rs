@@ -4,7 +4,7 @@
 /// FocusEvent, InputEvent, PointerEvent, ErrorEvent, HashChangeEvent, PopStateEvent.
 
 /// Install all event constructors on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     macro_rules! set_ctor {
         ($scope:expr, $global:expr, $name:expr, $cb:ident) => {{
             let func = v8::Function::new($scope, $cb).unwrap();
@@ -44,19 +44,19 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 }
 
 fn event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = v8::Object::new(scope);
 
-    let set_str = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str| {
+    let set_str = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str| {
         let k = v8::String::new(scope, key).unwrap();
         let v = v8::String::new(scope, val).unwrap();
         obj.set(scope, k.into(), v.into());
     };
-    let set_bool = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: bool| {
+    let set_bool = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: bool| {
         let k = v8::String::new(scope, key).unwrap();
         let v = v8::Boolean::new(scope, val);
         obj.set(scope, k.into(), v.into());
@@ -89,7 +89,7 @@ fn event_constructor(
     let k = v8::String::new(scope, "currentTarget").unwrap();
     obj.set(scope, k.into(), null.into());
 
-    let prevent = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let prevent = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let ck = v8::String::new(scope, "cancelable").unwrap();
         let cancelable = this.get(scope, ck.into())
@@ -110,19 +110,19 @@ fn event_constructor(
 }
 
 fn custom_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = v8::Object::new(scope);
 
-    let set_str = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str| {
+    let set_str = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str| {
         let k = v8::String::new(scope, key).unwrap();
         let v = v8::String::new(scope, val).unwrap();
         obj.set(scope, k.into(), v.into());
     };
-    let set_bool = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: bool| {
+    let set_bool = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: bool| {
         let k = v8::String::new(scope, key).unwrap();
         let v = v8::Boolean::new(scope, val);
         obj.set(scope, k.into(), v.into());
@@ -162,7 +162,7 @@ fn custom_event_constructor(
         obj.set(scope, d_key.into(), null2.into());
     }
 
-    let prevent = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let prevent = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let ck = v8::String::new(scope, "cancelable").unwrap();
         let cancelable = this.get(scope, ck.into())
@@ -182,8 +182,8 @@ fn custom_event_constructor(
     rv.set(obj.into());
 }
 
-pub fn build_base_event<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn build_base_event<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     event_type: &str,
     args: &v8::FunctionCallbackArguments,
 ) -> v8::Local<'s, v8::Object> {
@@ -226,7 +226,7 @@ pub fn build_base_event<'s>(
     let k = v8::String::new(scope, "currentTarget").unwrap();
     obj.set(scope, k.into(), null.into());
 
-    let prevent = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let prevent = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         let this = args.this();
         let ck = v8::String::new(scope, "cancelable").unwrap();
         let cancelable = this.get(scope, ck.into())
@@ -245,21 +245,21 @@ pub fn build_base_event<'s>(
     obj
 }
 
-fn read_init_number(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, prop: &str) -> f64 {
+fn read_init_number(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, prop: &str) -> f64 {
     let k = v8::String::new(scope, prop).unwrap();
     init.get(scope, k.into())
         .and_then(|v| v.number_value(scope))
         .unwrap_or(0.0)
 }
 
-fn read_init_bool(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, prop: &str) -> bool {
+fn read_init_bool(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, prop: &str) -> bool {
     let k = v8::String::new(scope, prop).unwrap();
     init.get(scope, k.into())
         .map(|v| v.boolean_value(scope))
         .unwrap_or(false)
 }
 
-fn read_init_string(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, prop: &str) -> String {
+fn read_init_string(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, prop: &str) -> String {
     let k = v8::String::new(scope, prop).unwrap();
     init.get(scope, k.into())
         .map(|v| v.to_rust_string_lossy(scope))
@@ -267,7 +267,7 @@ fn read_init_string(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, pr
 }
 
 fn mouse_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -317,7 +317,7 @@ fn mouse_event_constructor(
         let val = v8::null(scope);
         obj.set(scope, k.into(), val.into());
     }
-    let gms = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gms = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
     let k = v8::String::new(scope, "getModifierState").unwrap();
@@ -326,7 +326,7 @@ fn mouse_event_constructor(
 }
 
 fn keyboard_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -370,7 +370,7 @@ fn keyboard_event_constructor(
             obj.set(scope, k.into(), f.into());
         }
     }
-    let gms = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gms = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
     let k = v8::String::new(scope, "getModifierState").unwrap();
@@ -379,7 +379,7 @@ fn keyboard_event_constructor(
 }
 
 fn focus_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -398,7 +398,7 @@ fn focus_event_constructor(
 }
 
 fn input_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -433,7 +433,7 @@ fn input_event_constructor(
 }
 
 fn pointer_event_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -492,7 +492,7 @@ fn pointer_event_constructor(
         let k = v8::String::new(scope, "pressure").unwrap();
         obj.set(scope, k.into(), zero.into());
     }
-    let gms = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gms = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();
     let k = v8::String::new(scope, "getModifierState").unwrap();
@@ -500,7 +500,7 @@ fn pointer_event_constructor(
     rv.set(obj.into());
 }
 
-fn error_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn error_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let empty = v8::String::new(scope, "").unwrap();
@@ -542,7 +542,7 @@ fn error_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallba
     rv.set(obj.into());
 }
 
-fn hashchange_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn hashchange_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let empty = v8::String::new(scope, "").unwrap();
@@ -563,7 +563,7 @@ fn hashchange_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionC
     rv.set(obj.into());
 }
 
-fn popstate_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn popstate_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let k = v8::String::new(scope, "state").unwrap();
@@ -581,35 +581,35 @@ fn popstate_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCal
 // ─── Round 2 Phase 3: Additional event constructors ─────────────────────────
 
 /// Helper: set a string property on an object.
-fn set_s(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str) {
+fn set_s(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::String::new(scope, val).unwrap();
     obj.set(scope, k.into(), v.into());
 }
 
 /// Helper: set a number property on an object.
-fn set_n(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: f64) {
+fn set_n(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: f64) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::Number::new(scope, val);
     obj.set(scope, k.into(), v.into());
 }
 
 /// Helper: set an int property on an object.
-fn set_i(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: i32) {
+fn set_i(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: i32) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::Integer::new(scope, val);
     obj.set(scope, k.into(), v.into());
 }
 
 /// Helper: set a bool property on an object.
-fn set_b(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: bool) {
+fn set_b(scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: bool) {
     let k = v8::String::new(scope, key).unwrap();
     let v = v8::Boolean::new(scope, val);
     obj.set(scope, k.into(), v.into());
 }
 
 /// Helper: extract a string from init dict.
-fn get_str(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str) -> String {
+fn get_str(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, key: &str) -> String {
     let k = v8::String::new(scope, key).unwrap();
     init.get(scope, k.into())
         .filter(|v| !v.is_undefined())
@@ -618,7 +618,7 @@ fn get_str(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str) 
 }
 
 /// Helper: extract a number from init dict.
-fn get_num(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str, default: f64) -> f64 {
+fn get_num(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, key: &str, default: f64) -> f64 {
     let k = v8::String::new(scope, key).unwrap();
     init.get(scope, k.into())
         .filter(|v| !v.is_undefined())
@@ -627,7 +627,7 @@ fn get_num(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str, 
 }
 
 /// Helper: extract an int from init dict.
-fn get_int(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str, default: i32) -> i32 {
+fn get_int(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, key: &str, default: i32) -> i32 {
     let k = v8::String::new(scope, key).unwrap();
     init.get(scope, k.into())
         .filter(|v| !v.is_undefined())
@@ -636,7 +636,7 @@ fn get_int(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str, 
 }
 
 /// Helper: extract a bool from init dict.
-fn get_bool(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str, default: bool) -> bool {
+fn get_bool(scope: &mut v8::PinnedRef<v8::HandleScope>, init: v8::Local<v8::Object>, key: &str, default: bool) -> bool {
     let k = v8::String::new(scope, key).unwrap();
     init.get(scope, k.into())
         .filter(|v| !v.is_undefined())
@@ -644,7 +644,7 @@ fn get_bool(scope: &mut v8::HandleScope, init: v8::Local<v8::Object>, key: &str,
         .unwrap_or(default)
 }
 
-fn uievent_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn uievent_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let detail = if args.length() > 1 && args.get(1).is_object() {
@@ -658,7 +658,7 @@ fn uievent_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackAr
     rv.set(obj.into());
 }
 
-fn wheel_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn wheel_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let (dx, dy, dz, dm) = if args.length() > 1 && args.get(1).is_object() {
@@ -673,7 +673,7 @@ fn wheel_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallba
     rv.set(obj.into());
 }
 
-fn touch_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn touch_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     for name in &["touches", "targetTouches", "changedTouches"] {
@@ -684,7 +684,7 @@ fn touch_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallba
     rv.set(obj.into());
 }
 
-fn transition_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn transition_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let (pn, et, pe) = if args.length() > 1 && args.get(1).is_object() {
@@ -697,7 +697,7 @@ fn transition_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionC
     rv.set(obj.into());
 }
 
-fn animation_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn animation_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let (an, et, pe) = if args.length() > 1 && args.get(1).is_object() {
@@ -710,7 +710,7 @@ fn animation_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCa
     rv.set(obj.into());
 }
 
-fn message_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn message_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     // Extract data from init dict
@@ -735,7 +735,7 @@ fn message_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCall
     rv.set(obj.into());
 }
 
-fn close_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn close_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let (wc, code, reason) = if args.length() > 1 && args.get(1).is_object() {
@@ -748,7 +748,7 @@ fn close_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallba
     rv.set(obj.into());
 }
 
-fn progress_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn progress_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let (lc, loaded, total) = if args.length() > 1 && args.get(1).is_object() {
@@ -761,7 +761,7 @@ fn progress_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCal
     rv.set(obj.into());
 }
 
-fn promise_rejection_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn promise_rejection_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     if args.length() > 1 && args.get(1).is_object() {
@@ -782,7 +782,7 @@ fn promise_rejection_event_constructor(scope: &mut v8::HandleScope, args: v8::Fu
     rv.set(obj.into());
 }
 
-fn submit_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn submit_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let k = v8::String::new(scope, "submitter").unwrap();
@@ -797,7 +797,7 @@ fn submit_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallb
     rv.set(obj.into());
 }
 
-fn storage_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn storage_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let null = v8::null(scope);
@@ -819,7 +819,7 @@ fn storage_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCall
     rv.set(obj.into());
 }
 
-fn clipboard_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn clipboard_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let null = v8::null(scope);
@@ -828,7 +828,7 @@ fn clipboard_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCa
     rv.set(obj.into());
 }
 
-fn drag_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn drag_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let null = v8::null(scope);
@@ -837,7 +837,7 @@ fn drag_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbac
     rv.set(obj.into());
 }
 
-fn composition_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn composition_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     let data = if args.length() > 1 && args.get(1).is_object() {
@@ -848,7 +848,7 @@ fn composition_event_constructor(scope: &mut v8::HandleScope, args: v8::Function
     rv.set(obj.into());
 }
 
-fn secpolicy_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn secpolicy_event_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let event_type = args.get(0).to_rust_string_lossy(scope);
     let obj = build_base_event(scope, &event_type, &args);
     set_s(scope, obj, "documentURI", "");
@@ -870,7 +870,7 @@ fn secpolicy_event_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCa
 /// FunctionTemplate requires a no-context scope).
 /// Install standard methods on Event.prototype so polyfills (webcomponents-sd.js,
 /// ShadyDOM) detect native support via `Event.prototype.composedPath` etc.
-fn install_event_prototype_methods(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+fn install_event_prototype_methods(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let source = r#"
     (function(g) {
         var EP = g.Event.prototype;
@@ -920,7 +920,7 @@ fn install_event_prototype_methods(scope: &mut v8::HandleScope, global: v8::Loca
     log::debug!("Installed Event.prototype methods (composedPath, composed, preventDefault, stopPropagation, initEvent)");
 }
 
-pub fn install_event_target(scope: &mut v8::HandleScope, _global: v8::Local<v8::Object>) {
+pub fn install_event_target(scope: &mut v8::PinnedRef<v8::HandleScope>, _global: v8::Local<v8::Object>) {
     let source = r#"
     (function() {
         "use strict";

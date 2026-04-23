@@ -18,8 +18,8 @@ impl WebStorage {
 }
 
 /// Create a Storage-like object backed by the given store type.
-pub fn create_storage_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn create_storage_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     is_local: bool,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -62,7 +62,7 @@ pub fn create_storage_object<'s>(
     obj
 }
 
-fn is_local_storage(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> bool {
+fn is_local_storage(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> bool {
     let name = v8::String::new(scope, "__storageType").unwrap();
     let type_key = v8::Private::for_api(scope, Some(name));
     this.get_private(scope, type_key)
@@ -71,7 +71,7 @@ fn is_local_storage(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) ->
 }
 
 fn storage_get_item(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -93,7 +93,7 @@ fn storage_get_item(
 }
 
 fn storage_set_item(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -107,7 +107,7 @@ fn storage_set_item(
 }
 
 fn storage_remove_item(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -120,7 +120,7 @@ fn storage_remove_item(
 }
 
 fn storage_clear(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -135,7 +135,7 @@ fn storage_clear(
 }
 
 fn storage_key(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -157,12 +157,15 @@ fn storage_key(
 }
 
 fn storage_length_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _key: v8::Local<v8::Name>,
     args: v8::PropertyCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let is_local = is_local_storage(scope, args.this());
+    // v8 147: PropertyCallbackArguments lost `this()` — use holder() instead
+    // (the object carrying the interceptor, which for storage getters is the
+    // storage proxy itself).
+    let is_local = is_local_storage(scope, args.holder());
 
     let len = {
         let ws = scope.get_slot::<WebStorage>().unwrap();

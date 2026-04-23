@@ -79,6 +79,14 @@ class Client:
     a custom TLS configuration. Cache and TLS behavior are controllable
     at the class level.
 
+    **Concurrency model:**
+    A single ``Client`` instance is safe to share across Python threads.
+    HTTP fetches run in parallel (tokio runtime). The V8 execution phase
+    serializes globally because V8's process-wide JSDispatchTable cannot
+    have multiple live isolates doing background work concurrently. For
+    JS-heavy pages this means JS execution effectively runs one render at
+    a time, but HTTP I/O still benefits from threading.
+
     Args:
         cache: Master cache toggle (default True).
         cache_read: Whether to read from cache (default True).
@@ -90,6 +98,14 @@ class Client:
         alps: Enable ALPS protocol negotiation (default True).
         permute_extensions: Randomize TLS extension order (default True).
         post_quantum: Enable X25519MLKEM768 post-quantum key exchange (default True).
+        js_workers: Number of dedicated V8 executor threads for this Client.
+            Each worker owns one long-lived V8 isolate. Defaults to
+            ``min(available_parallelism, 4)``. Construction blocks until all
+            workers' isolates are ready (~50-100 ms per worker).
+        js_timeout_ms: Per-render JavaScript execution timeout in milliseconds.
+            A render whose JS phase exceeds this is killed via
+            ``IsolateHandle::terminate_execution`` and the worker's isolate
+            self-recovers for the next render. Default 10 000.
     """
 
     def __init__(
@@ -105,6 +121,8 @@ class Client:
         alps: bool | None = None,
         permute_extensions: bool | None = None,
         post_quantum: bool | None = None,
+        js_workers: int | None = None,
+        js_timeout_ms: int | None = None,
     ) -> None:
         self._inner = _Client(
             cache=cache,
@@ -117,6 +135,8 @@ class Client:
             alps=alps,
             permute_extensions=permute_extensions,
             post_quantum=post_quantum,
+            js_workers=js_workers,
+            js_timeout_ms=js_timeout_ms,
         )
 
     def render(

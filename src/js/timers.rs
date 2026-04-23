@@ -51,7 +51,7 @@ impl TimerQueue {
 }
 
 /// Install timer functions on the global object.
-pub fn install(scope: &mut v8::HandleScope) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let context = scope.get_current_context();
     let global = context.global(scope);
 
@@ -77,7 +77,7 @@ pub fn install(scope: &mut v8::HandleScope) {
 /// Drain all pending timers, executing callbacks in delay order.
 /// Returns collected error messages. Re-drains up to `max_rounds` times
 /// in case timer callbacks schedule new timers.
-pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
+pub fn drain(scope: &mut v8::PinnedRef<v8::HandleScope>, max_rounds: usize) -> Vec<String> {
     let mut errors = Vec::new();
 
     for _ in 0..max_rounds {
@@ -95,7 +95,7 @@ pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
         entries.sort_by_key(|(id, delay, _)| (*delay, *id));
 
         for (_id, _delay, callback) in entries {
-            let try_catch = &mut v8::TryCatch::new(scope);
+            crate::try_catch!(let try_catch, scope);
             let func: v8::Local<v8::Function> = v8::Local::new(try_catch, &callback);
             let undefined = v8::undefined(try_catch);
             if func.call(try_catch, undefined.into(), &[]).is_none() {
@@ -117,7 +117,7 @@ pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
 // ─── Callbacks ───────────────────────────────────────────────────────────────
 
 fn set_timeout(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -126,7 +126,7 @@ fn set_timeout(
 }
 
 fn set_interval(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -135,7 +135,7 @@ fn set_interval(
 }
 
 fn clear_timeout(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -146,7 +146,7 @@ fn clear_timeout(
 }
 
 fn clear_interval(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -157,7 +157,7 @@ fn clear_interval(
 }
 
 fn request_animation_frame(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -166,7 +166,7 @@ fn request_animation_frame(
     rv.set(v8::Integer::new(scope, id as i32).into());
 }
 
-fn add_timer(scope: &mut v8::HandleScope, args: &v8::FunctionCallbackArguments, is_interval: bool) -> u32 {
+fn add_timer(scope: &mut v8::PinnedRef<v8::HandleScope>, args: &v8::FunctionCallbackArguments, is_interval: bool) -> u32 {
     let callback_arg = args.get(0);
     if !callback_arg.is_function() {
         return 0;

@@ -1,7 +1,7 @@
 /// TextEncoder and TextDecoder constructors.
 
 /// Install TextEncoder and TextDecoder constructors on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let te_ctor = v8::Function::new(scope, text_encoder_constructor).unwrap();
     let key = v8::String::new(scope, "TextEncoder").unwrap();
     global.set(scope, key.into(), te_ctor.into());
@@ -12,7 +12,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 }
 
 fn text_encoder_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -25,7 +25,7 @@ fn text_encoder_constructor(
     let k = v8::String::new(scope, "encode").unwrap();
     obj.set(scope, k.into(), encode_fn.into());
 
-    let encode_into_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let encode_into_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let result = v8::Object::new(scope);
         let input = args.get(0).to_rust_string_lossy(scope);
         let k = v8::String::new(scope, "read").unwrap();
@@ -43,7 +43,7 @@ fn text_encoder_constructor(
 }
 
 fn text_encoder_encode(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -59,7 +59,7 @@ fn text_encoder_encode(
 }
 
 fn text_decoder_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -81,7 +81,7 @@ fn text_decoder_constructor(
 }
 
 fn text_decoder_decode(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
