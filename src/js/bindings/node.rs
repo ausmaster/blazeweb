@@ -9,7 +9,7 @@ use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 use super::helpers::{set_accessor, set_accessor_with_setter, set_method};
 
 /// Throw a DOMException-style error in V8 for a DOM validation failure.
-fn throw_dom_error(scope: &mut v8::HandleScope, err: DomValidationError) {
+fn throw_dom_error(scope: &mut v8::PinnedRef<v8::HandleScope>, err: DomValidationError) {
     let msg = v8::String::new(scope, &err.to_string()).unwrap();
     let exc = v8::Exception::error(scope, msg);
     // Set the name property on the exception to match DOMException convention
@@ -25,7 +25,7 @@ fn throw_dom_error(scope: &mut v8::HandleScope, err: DomValidationError) {
 }
 
 /// Install Node properties and methods on the given prototype template.
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     // Readonly accessors
     set_accessor(scope, proto, "nodeType", node_type_getter);
     set_accessor(scope, proto, "nodeName", node_name_getter);
@@ -61,7 +61,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
     set_method(scope, proto, "isDefaultNamespace", is_default_namespace);
 
     // Node type constants
-    let set_const = |scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>, name: &str, val: i32| {
+    let set_const = |scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>, name: &str, val: i32| {
         let key = v8::String::new(scope, name).unwrap();
         let value = v8::Integer::new(scope, val);
         proto.set(key.into(), value.into());
@@ -98,7 +98,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
 // ─── Accessors ────────────────────────────────────────────────────────────────
 
 fn node_type_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -116,7 +116,7 @@ fn node_type_getter(
 }
 
 fn node_name_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -142,7 +142,7 @@ fn node_name_getter(
 }
 
 fn node_value_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -158,7 +158,7 @@ fn node_value_getter(
 }
 
 fn parent_node_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -174,7 +174,7 @@ fn parent_node_getter(
 }
 
 fn parent_element_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -190,7 +190,7 @@ fn parent_element_getter(
 }
 
 fn first_child_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -203,7 +203,7 @@ fn first_child_getter(
 }
 
 fn last_child_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -216,7 +216,7 @@ fn last_child_getter(
 }
 
 fn next_sibling_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -229,7 +229,7 @@ fn next_sibling_getter(
 }
 
 fn previous_sibling_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -242,7 +242,7 @@ fn previous_sibling_getter(
 }
 
 fn child_nodes_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -271,8 +271,8 @@ fn child_nodes_getter(
 }
 
 /// Create a Proxy-based live NodeList for childNodes.
-fn create_live_child_nodes<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn create_live_child_nodes<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     node_id: crate::dom::NodeId,
 ) -> v8::Local<'s, v8::Object> {
     // Target object: stores the NodeId for callbacks to find
@@ -306,7 +306,7 @@ fn create_live_child_nodes<'s>(
 }
 
 /// Helper: extract the NodeId from a childNodes proxy target.
-fn child_nodes_target_id(scope: &mut v8::HandleScope, target: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
+fn child_nodes_target_id(scope: &mut v8::PinnedRef<v8::HandleScope>, target: v8::Local<v8::Object>) -> Option<crate::dom::NodeId> {
     let id_key = v8::String::new(scope, "__nodeId").unwrap();
     let node_obj = target.get(scope, id_key.into())?;
     if !node_obj.is_object() { return None; }
@@ -316,7 +316,7 @@ fn child_nodes_target_id(scope: &mut v8::HandleScope, target: v8::Local<v8::Obje
 
 /// Get trap for live childNodes Proxy.
 fn child_nodes_get_trap(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -349,7 +349,7 @@ fn child_nodes_get_trap(
         }
         "entries" | "keys" | "values" => {
             // Return a no-op function (simplified — these are rarely used on childNodes)
-            let noop = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+            let noop = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
                 rv.set(v8::Array::new(scope, 0).into());
             }).unwrap();
             rv.set(noop.into());
@@ -375,7 +375,7 @@ fn child_nodes_get_trap(
 /// item(index) method on live childNodes.
 /// Parent node_id is passed via Function::builder data (a wrapped node object).
 fn child_nodes_item_fn(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -399,7 +399,7 @@ fn child_nodes_item_fn(
 
 /// forEach(callback) on live childNodes.
 fn child_nodes_foreach_fn(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -426,7 +426,7 @@ fn child_nodes_foreach_fn(
 
 /// ownKeys trap — returns ["0", "1", ..., "length"].
 fn child_nodes_own_keys_trap(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -447,7 +447,7 @@ fn child_nodes_own_keys_trap(
 
 /// getOwnPropertyDescriptor trap — returns configurable+enumerable descriptor.
 fn child_nodes_gopd_trap(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -487,7 +487,7 @@ fn child_nodes_gopd_trap(
 }
 
 fn owner_document_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -505,7 +505,7 @@ fn owner_document_getter(
 /// isConnected — O(1) check via NodeFlags.IS_CONNECTED.
 /// https://dom.spec.whatwg.org/#dom-node-isconnected
 fn is_connected_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -516,7 +516,7 @@ fn is_connected_getter(
 }
 
 fn text_content_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -528,7 +528,7 @@ fn text_content_getter(
 }
 
 fn text_content_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -593,7 +593,7 @@ fn collect_text_recursive(
 // ─── Methods ──────────────────────────────────────────────────────────────────
 
 fn append_child(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -645,7 +645,7 @@ fn append_child(
 }
 
 fn remove_child(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -684,7 +684,7 @@ fn remove_child(
 }
 
 fn insert_before(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -761,7 +761,7 @@ fn insert_before(
 }
 
 fn clone_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -782,7 +782,7 @@ fn clone_node(
 }
 
 fn has_child_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -793,7 +793,7 @@ fn has_child_nodes(
 }
 
 fn contains(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -823,7 +823,7 @@ fn contains(
 }
 
 fn is_same_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -842,7 +842,7 @@ fn is_same_node(
 }
 
 fn is_equal_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -903,7 +903,7 @@ fn nodes_equal(arena: &crate::dom::Arena, a: crate::dom::NodeId, b: crate::dom::
 /// Ported from Servo's node.rs Normalize implementation.
 /// https://dom.spec.whatwg.org/#dom-node-normalize
 fn normalize(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -972,7 +972,7 @@ fn do_normalize(arena: &mut crate::dom::Arena, node_id: crate::dom::NodeId) {
 }
 
 fn get_root_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -986,7 +986,7 @@ fn get_root_node(
 }
 
 fn replace_child(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1028,7 +1028,7 @@ fn replace_child(
 }
 
 /// Convert a JS argument to a NodeId — if it's a string, create a text node.
-fn arg_to_node_id(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -> Option<crate::dom::NodeId> {
+fn arg_to_node_id(scope: &mut v8::PinnedRef<v8::HandleScope>, arg: v8::Local<v8::Value>) -> Option<crate::dom::NodeId> {
     if arg.is_string() || arg.is_number() {
         let text = arg.to_rust_string_lossy(scope);
         let arena = arena_mut(scope);
@@ -1042,7 +1042,7 @@ fn arg_to_node_id(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -> Opt
 }
 
 fn append_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1063,7 +1063,7 @@ fn append_nodes(
 }
 
 fn prepend_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1094,7 +1094,7 @@ fn prepend_nodes(
 }
 
 fn before_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1116,7 +1116,7 @@ fn before_nodes(
 }
 
 fn after_nodes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1150,7 +1150,7 @@ fn after_nodes(
 }
 
 fn replace_with(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1185,7 +1185,7 @@ const DOCUMENT_POSITION_CONTAINED_BY: u16 = 0x10;
 const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: u16 = 0x20;
 
 fn compare_document_position(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1299,7 +1299,7 @@ fn do_compare_document_position(
 // beyond the element's QualName, but these methods must exist per spec.
 
 fn lookup_prefix(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1346,7 +1346,7 @@ fn lookup_prefix(
 }
 
 fn lookup_namespace_uri(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1418,7 +1418,7 @@ fn lookup_namespace_uri(
 }
 
 fn is_default_namespace(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1459,7 +1459,7 @@ fn is_default_namespace(
 
 /// Fire connectedCallback if the node is a registered custom element.
 fn fire_ce_connected_if_needed(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_obj: v8::Local<v8::Object>,
     node_id: crate::dom::NodeId,
 ) {
@@ -1476,7 +1476,7 @@ fn fire_ce_connected_if_needed(
 
 /// Fire disconnectedCallback if the node is a registered custom element.
 fn fire_ce_disconnected_if_needed(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_obj: v8::Local<v8::Object>,
     node_id: crate::dom::NodeId,
 ) {

@@ -40,7 +40,7 @@ impl FetchQueue {
 // ── Install ──────────────────────────────────────────────────────────────────
 
 /// Install `fetch` on the global object.
-pub fn install(scope: &mut v8::HandleScope) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let context = scope.get_current_context();
     let global = context.global(scope);
     let key = v8::String::new(scope, "fetch").unwrap();
@@ -51,7 +51,7 @@ pub fn install(scope: &mut v8::HandleScope) {
 // ── V8 callback ──────────────────────────────────────────────────────────────
 
 fn fetch_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -112,7 +112,7 @@ fn fetch_callback(
     });
 }
 
-fn parse_headers(scope: &mut v8::HandleScope, opts: v8::Local<v8::Object>) -> Vec<(String, String)> {
+fn parse_headers(scope: &mut v8::PinnedRef<v8::HandleScope>, opts: v8::Local<v8::Object>) -> Vec<(String, String)> {
     let k = v8::String::new(scope, "headers").unwrap();
     let Some(val) = opts.get(scope, k.into()) else {
         return vec![];
@@ -142,7 +142,7 @@ fn parse_headers(scope: &mut v8::HandleScope, opts: v8::Local<v8::Object>) -> Ve
 
 /// Drain all pending fetches: fire concurrently via unified pipeline, resolve
 /// promises, run microtasks. Returns collected error messages.
-pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
+pub fn drain(scope: &mut v8::PinnedRef<v8::HandleScope>, max_rounds: usize) -> Vec<String> {
     let errors = Vec::new();
 
     for _ in 0..max_rounds {
@@ -237,8 +237,8 @@ pub fn drain(scope: &mut v8::HandleScope, max_rounds: usize) -> Vec<String> {
 
 // ── Response object construction ─────────────────────────────────────────────
 
-fn create_response_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn create_response_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     resp: &Response,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -328,7 +328,7 @@ fn create_response_object<'s>(
     obj
 }
 
-fn get_body_from_response(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> String {
+fn get_body_from_response(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> String {
     let body_name = v8::String::new(scope, "__body").unwrap();
     let body_key = v8::Private::for_api(scope, Some(body_name));
     this.get_private(scope, body_key)
@@ -337,7 +337,7 @@ fn get_body_from_response(scope: &mut v8::HandleScope, this: v8::Local<v8::Objec
 }
 
 fn response_text(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -355,7 +355,7 @@ fn response_text(
 }
 
 fn response_json(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -383,7 +383,7 @@ fn response_json(
 }
 
 fn response_array_buffer(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -394,7 +394,7 @@ fn response_array_buffer(
 }
 
 fn response_blob(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -405,7 +405,7 @@ fn response_blob(
 }
 
 fn response_clone(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -447,8 +447,8 @@ fn response_clone(
 
 // ── Headers object ───────────────────────────────────────────────────────────
 
-fn create_headers_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn create_headers_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     headers: &[(String, String)],
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -483,7 +483,7 @@ fn create_headers_object<'s>(
     obj
 }
 
-fn get_headers_map(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> Vec<(String, String)> {
+fn get_headers_map(scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>) -> Vec<(String, String)> {
     let name = v8::String::new(scope, "__headers").unwrap();
     let key = v8::Private::for_api(scope, Some(name));
     let serialized = this
@@ -507,7 +507,7 @@ fn get_headers_map(scope: &mut v8::HandleScope, this: v8::Local<v8::Object>) -> 
 }
 
 fn headers_get(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -531,7 +531,7 @@ fn headers_get(
 }
 
 fn headers_has(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -542,7 +542,7 @@ fn headers_has(
 }
 
 fn headers_foreach(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

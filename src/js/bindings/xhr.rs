@@ -5,7 +5,7 @@
 /// of inline reqwest calls.
 
 /// Install XMLHttpRequest on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let xhr_ctor = v8::Function::new(scope, xhr_constructor).unwrap();
     for (name, ival) in &[("UNSENT", 0), ("OPENED", 1), ("HEADERS_RECEIVED", 2), ("LOADING", 3), ("DONE", 4)] {
         let k = v8::String::new(scope, name).unwrap();
@@ -16,7 +16,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
     global.set(scope, key.into(), xhr_ctor.into());
 }
 
-fn xhr_constructor(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn xhr_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let obj = v8::Object::new(scope);
     let empty = v8::String::new(scope, "").unwrap();
     let izero = v8::Integer::new(scope, 0);
@@ -85,7 +85,7 @@ fn xhr_constructor(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArgum
     let k = v8::String::new(scope, "getAllResponseHeaders").unwrap();
     obj.set(scope, k.into(), get_all_fn.into());
 
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["abort", "overrideMimeType", "addEventListener", "removeEventListener"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
@@ -94,7 +94,7 @@ fn xhr_constructor(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArgum
     rv.set(obj.into());
 }
 
-fn xhr_open(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn xhr_open(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let this = args.this();
     let method = args.get(0).to_rust_string_lossy(scope).to_ascii_uppercase();
     let url = args.get(1).to_rust_string_lossy(scope);
@@ -111,7 +111,7 @@ fn xhr_open(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _r
     this.set(scope, k.into(), val.into());
 }
 
-fn xhr_set_request_header(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn xhr_set_request_header(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let this = args.this();
     let name = args.get(0).to_rust_string_lossy(scope);
     let value = args.get(1).to_rust_string_lossy(scope);
@@ -129,7 +129,7 @@ fn xhr_set_request_header(scope: &mut v8::HandleScope, args: v8::FunctionCallbac
     }
 }
 
-fn xhr_send(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn xhr_send(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let this = args.this();
     let pk = v8::String::new(scope, "__xhrMethod").unwrap();
     let hk = v8::Private::for_api(scope, Some(pk));
@@ -204,7 +204,7 @@ fn xhr_send(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _r
     );
 
     // Helper: fire onreadystatechange callback if set
-    let fire_readystatechange = |scope: &mut v8::HandleScope, this: v8::Local<v8::Object>| {
+    let fire_readystatechange = |scope: &mut v8::PinnedRef<v8::HandleScope>, this: v8::Local<v8::Object>| {
         let k = v8::String::new(scope, "onreadystatechange").unwrap();
         if let Some(cb) = this.get(scope, k.into()) {
             if cb.is_function() {
@@ -300,7 +300,7 @@ fn xhr_send(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _r
     }
 }
 
-fn xhr_get_response_header(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn xhr_get_response_header(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let this = args.this();
     let name = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let pk = v8::String::new(scope, "__xhrRespHeaders").unwrap();
@@ -319,7 +319,7 @@ fn xhr_get_response_header(scope: &mut v8::HandleScope, args: v8::FunctionCallba
     rv.set(v8::null(scope).into());
 }
 
-fn xhr_get_all_response_headers(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn xhr_get_all_response_headers(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let this = args.this();
     let pk = v8::String::new(scope, "__xhrRespHeaders").unwrap();
     let hk = v8::Private::for_api(scope, Some(pk));

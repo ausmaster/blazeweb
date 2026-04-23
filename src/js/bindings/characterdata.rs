@@ -12,7 +12,7 @@ use super::helpers::{set_accessor, set_accessor_with_setter, set_method};
 
 /// Install CharacterData properties and methods on a prototype.
 /// Called by both text::install and comment::install.
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     set_accessor_with_setter(scope, proto, "data", data_getter, data_setter);
     set_accessor(scope, proto, "length", length_getter);
     set_accessor(scope, proto, "nextElementSibling", next_element_sibling);
@@ -73,7 +73,7 @@ pub fn utf16_len(s: &str) -> u32 {
 // ---------------------------------------------------------------------------
 
 fn data_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -86,7 +86,7 @@ fn data_getter(
 }
 
 fn data_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -109,7 +109,7 @@ fn data_setter(
 }
 
 fn length_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -127,7 +127,7 @@ fn length_getter(
 /// substringData(offset, count)
 /// https://dom.spec.whatwg.org/#dom-characterdata-substringdata
 fn substring_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -168,7 +168,7 @@ fn substring_data(
 /// appendData(data)
 /// https://dom.spec.whatwg.org/#dom-characterdata-appenddata
 fn append_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -187,7 +187,7 @@ fn append_data(
 /// insertData(offset, data)
 /// https://dom.spec.whatwg.org/#dom-characterdata-insertdata
 fn insert_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -216,7 +216,7 @@ fn insert_data(
 /// deleteData(offset, count)
 /// https://dom.spec.whatwg.org/#dom-characterdata-deletedata
 fn delete_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -244,7 +244,7 @@ fn delete_data(
 /// replaceData(offset, count, data)
 /// https://dom.spec.whatwg.org/#concept-cd-replace
 fn replace_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -313,7 +313,7 @@ fn do_replace_data(data: &str, offset: u32, count: u32, arg: &str) -> Result<Str
 // ---------------------------------------------------------------------------
 
 fn before(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -333,7 +333,7 @@ fn before(
 }
 
 fn after(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -356,7 +356,7 @@ fn after(
 }
 
 fn replace_with(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -380,7 +380,7 @@ fn replace_with(
 }
 
 fn remove(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -391,7 +391,7 @@ fn remove(
 
 /// Collect variadic arguments as node IDs. Strings become new Text nodes.
 fn collect_node_or_string_args(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: &v8::FunctionCallbackArguments,
     arena: &mut crate::dom::Arena,
 ) -> Vec<crate::dom::NodeId> {
@@ -419,7 +419,7 @@ fn collect_node_or_string_args(
 // ---------------------------------------------------------------------------
 
 fn prev_element_sibling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -438,7 +438,7 @@ fn prev_element_sibling(
 }
 
 fn next_element_sibling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

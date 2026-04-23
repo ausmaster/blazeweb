@@ -135,7 +135,7 @@ impl MutationObserverState {
 
 /// Notify observers of a childList mutation.
 pub fn notify_child_list(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     parent: NodeId,
     added: &[NodeId],
     removed: &[NodeId],
@@ -203,7 +203,7 @@ pub fn notify_child_list(
 
 /// Notify observers of an attribute mutation.
 pub fn notify_attribute(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     target: NodeId,
     attr_name: &str,
     old_value: Option<&str>,
@@ -289,7 +289,7 @@ pub fn notify_attribute(
 
 /// Notify observers of a characterData mutation.
 pub fn notify_character_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     target: NodeId,
     old_value: &str,
 ) {
@@ -375,7 +375,7 @@ fn inclusive_ancestors(arena: &crate::dom::Arena, node: NodeId) -> Vec<NodeId> {
 }
 
 /// Ensure a single microtask is queued to dispatch pending records.
-fn maybe_enqueue_microtask(scope: &mut v8::HandleScope) {
+fn maybe_enqueue_microtask(scope: &mut v8::PinnedRef<v8::HandleScope>) {
     let already_queued = scope
         .get_slot::<MutationObserverState>()
         .map_or(true, |s| s.microtask_queued);
@@ -395,7 +395,7 @@ fn maybe_enqueue_microtask(scope: &mut v8::HandleScope) {
 /// V8 microtask callback: fire all pending observer callbacks.
 /// Per spec §4.3.1 step 5: "Queue a mutation observer microtask."
 fn dispatch_mutation_observers(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -438,8 +438,8 @@ fn dispatch_mutation_observers(
 }
 
 /// Build a plain JS object representing a MutationRecord.
-fn build_record_object<'s>(
-    scope: &mut v8::HandleScope<'s>,
+fn build_record_object<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     record: &MutationRecordData,
 ) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
@@ -526,8 +526,8 @@ fn build_record_object<'s>(
 }
 
 /// Build records as a V8 Array — used by takeRecords.
-pub fn build_records_array<'s>(
-    scope: &mut v8::HandleScope<'s>,
+pub fn build_records_array<'s, 'i>(
+    scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>,
     observer_idx: usize,
 ) -> v8::Local<'s, v8::Array> {
     let records = {

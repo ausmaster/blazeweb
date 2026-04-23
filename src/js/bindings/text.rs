@@ -9,7 +9,7 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 use super::helpers::{set_accessor, set_method};
 
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     // CharacterData methods are now inherited via FunctionTemplate chain
     // (Text → CharacterData → Node). Only install Text-specific methods here.
     set_accessor(scope, proto, "wholeText", whole_text_getter);
@@ -19,7 +19,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
 /// wholeText — concatenation of contiguous Text sibling data.
 /// https://dom.spec.whatwg.org/#dom-text-wholetext
 fn whole_text_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -57,7 +57,7 @@ fn whole_text_getter(
 ///
 /// Ported from Servo's text.rs SplitText implementation.
 fn split_text(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

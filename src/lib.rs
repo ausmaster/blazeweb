@@ -70,6 +70,8 @@ struct Client {
     wreq_client: Option<Arc<wreq::Client>>,
     /// Max concurrent connections per host (default 6, matching Chrome).
     max_connections_per_host: usize,
+    /// Per-instance JS executor pool. Owned for the Client's lifetime.
+    js_pool: Arc<js::executor::JsPool>,
 }
 
 impl Client {
@@ -121,6 +123,8 @@ impl Client {
         alps=None,
         permute_extensions=None,
         post_quantum=None,
+        js_workers=None,
+        js_timeout_ms=None,
     ))]
     fn new(
         cache: bool,
@@ -133,6 +137,8 @@ impl Client {
         alps: Option<bool>,
         permute_extensions: Option<bool>,
         post_quantum: Option<bool>,
+        js_workers: Option<usize>,
+        js_timeout_ms: Option<u64>,
     ) -> PyResult<Self> {
         let max_per_host = max_connections_per_host.unwrap_or(6);
 
@@ -160,6 +166,23 @@ impl Client {
             None
         };
 
+        // JS executor pool — eager init per user choice (predictable startup,
+        // first render is fast).
+        let workers = js_workers.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .min(4)
+                .max(1)
+        });
+        let js_timeout = std::time::Duration::from_millis(
+            js_timeout_ms.unwrap_or(10_000),
+        );
+        let js_pool = Arc::new(
+            js::executor::JsPool::with_timeout(workers, js_timeout)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
+        );
+
         Ok(Self {
             cache: AtomicBool::new(cache),
             cache_read: AtomicBool::new(cache_read),
@@ -168,6 +191,7 @@ impl Client {
             cookie_jar: Arc::new(Mutex::new(net::cookies::CookieJar::new())),
             wreq_client,
             max_connections_per_host: max_per_host,
+            js_pool,
         })
     }
 
@@ -183,8 +207,9 @@ impl Client {
         cache_write: Option<bool>,
     ) -> PyResult<RawRenderOutput> {
         let context = self.build_context(base_url, cache, cache_read, cache_write);
+        let pool = Arc::clone(&self.js_pool);
         py.allow_threads(|| {
-            engine::render_with_context(html, base_url, &context)
+            engine::render_with_pool(html, base_url, &context, &pool)
                 .map(RawRenderOutput::from)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
         })
@@ -201,8 +226,9 @@ impl Client {
         cache_write: Option<bool>,
     ) -> PyResult<RawRenderOutput> {
         let context = self.build_context(Some(url), cache, cache_read, cache_write);
+        let pool = Arc::clone(&self.js_pool);
         py.allow_threads(|| {
-            engine::fetch_with_context(url, &context)
+            engine::fetch_with_pool(url, &context, &pool)
                 .map(RawRenderOutput::from)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
         })
@@ -266,6 +292,10 @@ fn blazeweb_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     //   RUST_LOG=blazeweb=debug  — per-script details
     //   RUST_LOG=blazeweb=trace  — verbose (timer/fetch drain)
     let _ = env_logger::try_init();
+    // Eager-init the module-level default JsPool so module-level
+    // `blazeweb.render()` / `blazeweb.fetch()` don't pay first-call setup
+    // cost. Adds ~200-400ms to first `import blazeweb`.
+    let _ = js::executor::default_pool();
     m.add_function(wrap_pyfunction!(render, m)?)?;
     m.add_function(wrap_pyfunction!(fetch, m)?)?;
     m.add_class::<Client>()?;

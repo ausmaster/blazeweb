@@ -1,3 +1,8 @@
 [env]
 V8_FROM_SOURCE = "1"
-EXTRA_GN_ARGS = "v8_monolithic=true"
+# v8_monolithic_for_shared_library defines V8_TLS_USED_IN_LIBRARY which switches
+# TLS from local-exec to local-dynamic, required for cdylib linkage. Native to
+# v8 crate 147+ (was a manual BUILD.gn patch on 135).
+# v8_enable_temporal_support=false skips the Rust `temporal_capi` dep which
+# isn't fully vendored in the v8 crate 147 package.
+EXTRA_GN_ARGS = "v8_monolithic=true v8_monolithic_for_shared_library=true v8_enable_temporal_support=false"

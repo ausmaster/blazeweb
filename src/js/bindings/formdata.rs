@@ -1,13 +1,13 @@
 /// FormData API — key/value pair store for form data.
 
 /// Install the FormData constructor on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let formdata_ctor = v8::Function::new(scope, formdata_constructor).unwrap();
     let key = v8::String::new(scope, "FormData").unwrap();
     global.set(scope, key.into(), formdata_ctor.into());
 }
 
-fn formdata_constructor(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn formdata_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let obj = v8::Object::new(scope);
     let pairs = v8::Array::new(scope, 0);
     let pk = v8::String::new(scope, "__pairs").unwrap();
@@ -34,20 +34,20 @@ fn formdata_constructor(scope: &mut v8::HandleScope, _args: v8::FunctionCallback
     rv.set(obj.into());
 }
 
-pub fn fd_get_pairs<'s>(scope: &mut v8::HandleScope<'s>, this: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Array>> {
+pub fn fd_get_pairs<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>, this: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Array>> {
     let pk = v8::String::new(scope, "__pairs").unwrap();
     let hidden_key = v8::Private::for_api(scope, Some(pk));
     let val = this.get_private(scope, hidden_key)?;
     v8::Local::<v8::Array>::try_from(val).ok()
 }
-fn fd_append(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fd_append(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let pair = v8::Array::new(scope, 2);
     pair.set_index(scope, 0, args.get(0));
     pair.set_index(scope, 1, args.get(1));
     pairs.set_index(scope, pairs.length(), pair.into());
 }
-fn fd_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn fd_get(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -62,7 +62,7 @@ fn fd_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut 
     }
     rv.set(v8::null(scope).into());
 }
-fn fd_get_all(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn fd_get_all(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let result = v8::Array::new(scope, 0);
@@ -79,7 +79,7 @@ fn fd_get_all(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, 
     }
     rv.set(result.into());
 }
-fn fd_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fd_set(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     // Per XHR spec: set() replaces the first entry with the given name and removes all others.
     let key = args.get(0).to_rust_string_lossy(scope);
     let val = args.get(1);
@@ -117,7 +117,7 @@ fn fd_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv:
     let hidden_key = v8::Private::for_api(scope, Some(pk));
     args.this().set_private(scope, hidden_key, new_pairs.into());
 }
-fn fd_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn fd_has(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -130,7 +130,7 @@ fn fd_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut 
     }
     rv.set(v8::Boolean::new(scope, false).into());
 }
-fn fd_delete(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn fd_delete(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let new_pairs = v8::Array::new(scope, 0);
@@ -147,13 +147,13 @@ fn fd_delete(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _
     let hidden_key = v8::Private::for_api(scope, Some(pk));
     args.this().set_private(scope, hidden_key, new_pairs.into());
 }
-pub fn fd_entries(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub fn fd_entries(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() { if let Some(p) = pairs.get_index(scope, i) { arr.set_index(scope, i, p); } }
     rv.set(arr.into());
 }
-pub fn fd_keys(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub fn fd_keys(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() {
@@ -164,7 +164,7 @@ pub fn fd_keys(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
     }
     rv.set(arr.into());
 }
-pub fn fd_values(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+pub fn fd_values(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() {
@@ -175,7 +175,7 @@ pub fn fd_values(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArgument
     }
     rv.set(arr.into());
 }
-pub fn fd_for_each(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+pub fn fd_for_each(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let cb = args.get(0);
     if !cb.is_function() { return; }
     let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(cb) };

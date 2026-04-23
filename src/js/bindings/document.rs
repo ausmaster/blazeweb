@@ -12,7 +12,7 @@ use super::document_advanced::{
     document_noop, document_exec_command, adopt_node, import_node,
 };
 
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     // Accessors
     set_accessor(scope, proto, "documentElement", document_element_getter);
     set_accessor(scope, proto, "head", head_getter);
@@ -119,7 +119,7 @@ pub(super) fn find_child_element(
 // ─── Accessors ────────────────────────────────────────────────────────────────
 
 fn document_element_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -131,7 +131,7 @@ fn document_element_getter(
 }
 
 fn head_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -146,7 +146,7 @@ fn head_getter(
 }
 
 fn body_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -161,7 +161,7 @@ fn body_getter(
 }
 
 fn body_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -186,7 +186,7 @@ fn body_setter(
 }
 
 fn title_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -212,7 +212,7 @@ fn title_getter(
 }
 
 fn title_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -238,7 +238,7 @@ fn title_setter(
 // ─── Methods ──────────────────────────────────────────────────────────────────
 
 fn get_element_by_id(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -259,7 +259,7 @@ fn get_element_by_id(
 }
 
 fn get_elements_by_tag_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -295,7 +295,7 @@ fn collect_elements_by_tag(
 }
 
 fn get_elements_by_class_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -341,7 +341,7 @@ fn collect_elements_by_class(
 }
 
 fn get_elements_by_name(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -376,7 +376,7 @@ fn get_elements_by_name(
 }
 
 fn create_element(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -421,7 +421,7 @@ fn create_element(
                         let upgrade_fn = unsafe { v8::Local::<v8::Function>::cast_unchecked(upgrade_fn_val) };
                         let undef = v8::undefined(scope);
                         let ctor_local2 = v8::Local::new(scope, &ctor_g);
-                        let try_catch = &mut v8::TryCatch::new(scope);
+                        crate::try_catch!(let try_catch, scope);
                         if upgrade_fn.call(try_catch, undef.into(), &[wrapped.into(), ctor_local2.into()]).is_none() {
                             if let Some(exc) = try_catch.exception() {
                                 log::warn!(
@@ -441,7 +441,7 @@ fn create_element(
 }
 
 fn create_element_ns(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -478,7 +478,7 @@ fn create_element_ns(
 }
 
 fn create_text_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -490,7 +490,7 @@ fn create_text_node(
 }
 
 fn create_comment(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -502,7 +502,7 @@ fn create_comment(
 }
 
 fn create_document_fragment(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -518,7 +518,7 @@ pub struct DocumentCookie(pub String);
 pub struct CurrentScriptId(pub Option<crate::dom::NodeId>);
 
 fn ready_state_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -527,7 +527,7 @@ fn ready_state_getter(
 }
 
 fn document_url_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -539,7 +539,7 @@ fn document_url_getter(
 }
 
 fn base_uri_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -551,7 +551,7 @@ fn base_uri_getter(
 }
 
 fn cookie_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -563,7 +563,7 @@ fn cookie_getter(
 }
 
 fn cookie_setter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -574,7 +574,7 @@ fn cookie_setter(
 }
 
 fn query_selector(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -587,7 +587,7 @@ fn query_selector(
 }
 
 fn query_selector_all(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -611,7 +611,7 @@ fn query_selector_all(
 // ─── Batch 2: Document string accessors ──────────────────────────────────────
 
 fn charset_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -619,7 +619,7 @@ fn charset_getter(
 }
 
 fn compat_mode_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -627,7 +627,7 @@ fn compat_mode_getter(
 }
 
 fn content_type_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -635,7 +635,7 @@ fn content_type_getter(
 }
 
 fn referrer_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -643,7 +643,7 @@ fn referrer_getter(
 }
 
 fn domain_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -655,7 +655,7 @@ fn domain_getter(
 }
 
 fn last_modified_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -663,7 +663,7 @@ fn last_modified_getter(
 }
 
 fn current_script_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -677,7 +677,7 @@ fn current_script_getter(
 }
 
 fn active_element_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -692,7 +692,7 @@ fn active_element_getter(
 }
 
 fn doctype_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -718,7 +718,7 @@ fn doctype_getter(
 
 /// document.location — returns the same Location object as window.location.
 fn document_location_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -730,12 +730,12 @@ fn document_location_getter(
 }
 
 fn implementation_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let obj = v8::Object::new(scope);
-    let create_html_doc = v8::Function::new(scope, |scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let create_html_doc = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         // Return a minimal Document-like object
         let doc = v8::Object::new(scope);
         let k = v8::String::new(scope, "body").unwrap();
@@ -748,7 +748,7 @@ fn implementation_getter(
     }).unwrap();
     let k = v8::String::new(scope, "createHTMLDocument").unwrap();
     obj.set(scope, k.into(), create_html_doc.into());
-    let has_feature = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let has_feature = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, true).into());
     }).unwrap();
     let k = v8::String::new(scope, "hasFeature").unwrap();
@@ -759,7 +759,7 @@ fn implementation_getter(
 // ─── Collection accessors ────────────────────────────────────────────────────
 
 fn forms_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -767,7 +767,7 @@ fn forms_getter(
 }
 
 fn images_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -775,7 +775,7 @@ fn images_getter(
 }
 
 fn links_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -807,7 +807,7 @@ fn collect_links(
 }
 
 fn scripts_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -815,7 +815,7 @@ fn scripts_getter(
 }
 
 fn anchors_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -846,7 +846,7 @@ fn collect_anchors(
 }
 
 fn all_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -854,14 +854,14 @@ fn all_getter(
 }
 
 fn empty_array_getter(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     rv.set(v8::Array::new(scope, 0).into());
 }
 
-fn collect_elements_by_tag_global(scope: &mut v8::HandleScope, tag: &str, rv: &mut v8::ReturnValue) {
+fn collect_elements_by_tag_global(scope: &mut v8::PinnedRef<v8::HandleScope>, tag: &str, rv: &mut v8::ReturnValue) {
     let arena = arena_ref(scope);
     let mut results = Vec::new();
     collect_elements_by_tag(arena, arena.document, tag, &mut results);
@@ -876,7 +876,7 @@ fn collect_elements_by_tag_global(scope: &mut v8::HandleScope, tag: &str, rv: &m
 // ─── Batch 2: New methods ────────────────────────────────────────────────────
 
 fn has_focus(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

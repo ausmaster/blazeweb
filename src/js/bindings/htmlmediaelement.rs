@@ -7,7 +7,7 @@
 use super::helpers::{set_accessor, set_method};
 use crate::js::templates::unwrap_node_id;
 
-pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     // Methods
     set_method(scope, proto, "play", play);
     set_method(scope, proto, "pause", pause_noop);
@@ -36,7 +36,7 @@ pub fn install(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemp
 // ─── Methods ─────────────────────────────────────────────────────────────────
 
 fn play(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -48,19 +48,19 @@ fn play(
 }
 
 fn pause_noop(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {}
 
 fn load_noop(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {}
 
 fn can_play_type(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -70,78 +70,78 @@ fn can_play_type(
 
 // ─── Boolean accessors ───────────────────────────────────────────────────────
 
-fn paused_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn paused_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Boolean::new(scope, true).into());
 }
-fn ended_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn ended_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Boolean::new(scope, false).into());
 }
-fn muted_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn muted_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Boolean::new(scope, false).into());
 }
 
 // ─── Number accessors ────────────────────────────────────────────────────────
 
-fn current_time_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn current_time_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Number::new(scope, 0.0).into());
 }
-fn duration_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn duration_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Number::new(scope, f64::NAN).into());
 }
-fn volume_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn volume_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Number::new(scope, 1.0).into());
 }
-fn playback_rate_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn playback_rate_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Number::new(scope, 1.0).into());
 }
 
 // ─── Integer accessors ───────────────────────────────────────────────────────
 
-fn ready_state_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn ready_state_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Integer::new(scope, 0).into());
 }
-fn network_state_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn network_state_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::Integer::new(scope, 0).into());
 }
 
 // ─── String accessors ────────────────────────────────────────────────────────
 
-fn current_src_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn current_src_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     // Read src attribute if element has one
     let _ = unwrap_node_id(scope, _args.this()); // needed for future real impl
     let empty = v8::String::new(scope, "").unwrap();
     rv.set(empty.into());
 }
-fn preload_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn preload_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let empty = v8::String::new(scope, "").unwrap();
     rv.set(empty.into());
 }
 
 // ─── Null accessor ───────────────────────────────────────────────────────────
 
-fn error_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn error_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(v8::null(scope).into());
 }
 
 // ─── TimeRanges stubs ────────────────────────────────────────────────────────
 
-fn buffered_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn buffered_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(make_time_ranges(scope).into());
 }
-fn seekable_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn seekable_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(make_time_ranges(scope).into());
 }
-fn played_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn played_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     rv.set(make_time_ranges(scope).into());
 }
 
-fn make_time_ranges<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Object> {
+fn make_time_ranges<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>) -> v8::Local<'s, v8::Object> {
     let tr = v8::Object::new(scope);
     let zero = v8::Integer::new(scope, 0);
     let k = v8::String::new(scope, "length").unwrap();
     tr.set(scope, k.into(), zero.into());
     // start/end throw IndexSizeError when called (length is 0)
-    let throw_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
+    let throw_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {
         let msg = v8::String::new(scope, "IndexSizeError").unwrap();
         let exc = v8::Exception::range_error(scope, msg);
         scope.throw_exception(exc);
@@ -155,7 +155,7 @@ fn make_time_ranges<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Ob
 
 // ─── Array-like accessor ─────────────────────────────────────────────────────
 
-fn text_tracks_getter(scope: &mut v8::HandleScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn text_tracks_getter(scope: &mut v8::PinnedRef<v8::HandleScope>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let arr = v8::Array::new(scope, 0);
     rv.set(arr.into());
 }

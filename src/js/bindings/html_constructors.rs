@@ -4,7 +4,7 @@ use crate::dom::node::ElementData;
 use crate::js::templates::{arena_mut, wrap_node};
 
 /// Install Image, Audio, Option constructors on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let image_ctor = v8::Function::new(scope, image_constructor).unwrap();
     let key = v8::String::new(scope, "Image").unwrap();
     global.set(scope, key.into(), image_ctor.into());
@@ -18,7 +18,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
     global.set(scope, key.into(), option_ctor.into());
 }
 
-fn image_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn image_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let arena = arena_mut(scope);
     let name = markup5ever::QualName::new(None, markup5ever::ns!(html), "img".into());
     let mut attrs = vec![];
@@ -34,7 +34,7 @@ fn image_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArgu
     rv.set(wrap_node(scope, node_id).into());
 }
 
-fn audio_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn audio_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let arena = arena_mut(scope);
     let name = markup5ever::QualName::new(None, markup5ever::ns!(html), "audio".into());
     let mut attrs = vec![];
@@ -46,7 +46,7 @@ fn audio_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArgu
     rv.set(wrap_node(scope, node_id).into());
 }
 
-fn option_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn option_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let arena = arena_mut(scope);
     let name = markup5ever::QualName::new(None, markup5ever::ns!(html), "option".into());
     let mut attrs = vec![];

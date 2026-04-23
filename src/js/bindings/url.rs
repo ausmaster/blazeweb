@@ -4,7 +4,7 @@
 /// on the global object.
 
 /// Install URL, URLSearchParams, atob, and btoa on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     // URL constructor
     let url_ctor = v8::Function::new(scope, url_constructor).unwrap();
     let key = v8::String::new(scope, "URL").unwrap();
@@ -29,7 +29,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 // ─── URL constructor ─────────────────────────────────────────────────────────
 
 fn url_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -53,7 +53,7 @@ fn url_constructor(
     let obj = v8::Object::new(scope);
     // Parse and set URL parts
     if let Ok(url) = url::Url::parse(&resolved) {
-        let set_str = |scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, val: &str| {
+        let set_str = |scope: &mut v8::PinnedRef<v8::HandleScope>, obj: v8::Local<v8::Object>, key: &str, val: &str| {
             let k = v8::String::new(scope, key).unwrap();
             let v = v8::String::new(scope, val).unwrap();
             obj.set(scope, k.into(), v.into());
@@ -74,7 +74,7 @@ fn url_constructor(
         set_str(scope, obj, "origin", &format!("{}://{}", url.scheme(), host));
 
         // toString and toJSON — read href back from the object
-        let to_string = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+        let to_string = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
             let this = args.this();
             let k = v8::String::new(scope, "href").unwrap();
             if let Some(val) = this.get(scope, k.into()) {
@@ -164,7 +164,7 @@ fn b64_decode_char(c: u8) -> Option<u8> {
 }
 
 fn atob(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -184,7 +184,7 @@ fn atob(
 }
 
 fn btoa(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -197,7 +197,7 @@ fn btoa(
 // ─── URLSearchParams ─────────────────────────────────────────────────────────
 
 fn url_search_params_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -304,14 +304,14 @@ fn url_encode(s: &str) -> String {
     result
 }
 
-fn usp_get_pairs<'s>(scope: &mut v8::HandleScope<'s>, this: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Array>> {
+fn usp_get_pairs<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>, this: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Array>> {
     let pk_name = v8::String::new(scope, "__pairs").unwrap();
     let hidden_key = v8::Private::for_api(scope, Some(pk_name));
     let val = this.get_private(scope, hidden_key)?;
     v8::Local::<v8::Array>::try_from(val).ok()
 }
 
-fn usp_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_get(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -330,7 +330,7 @@ fn usp_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut
     rv.set(v8::null(scope).into());
 }
 
-fn usp_get_all(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_get_all(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     let result = v8::Array::new(scope, 0);
@@ -351,7 +351,7 @@ fn usp_get_all(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
     rv.set(result.into());
 }
 
-fn usp_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn usp_set(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let val = args.get(1);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
@@ -379,7 +379,7 @@ fn usp_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv
     }
 }
 
-fn usp_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_has(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -396,7 +396,7 @@ fn usp_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut
     rv.set(v8::Boolean::new(scope, false).into());
 }
 
-fn usp_delete(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn usp_delete(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     // Rebuild array without matching keys
@@ -418,7 +418,7 @@ fn usp_delete(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, 
     args.this().set_private(scope, hidden_key, new_pairs.into());
 }
 
-fn usp_append(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn usp_append(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0);
     let val = args.get(1);
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
@@ -428,7 +428,7 @@ fn usp_append(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, 
     pairs.set_index(scope, pairs.length(), pair.into());
 }
 
-fn usp_to_string(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_to_string(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     let mut parts = Vec::new();
     for i in 0..pairs.length() {
@@ -444,7 +444,7 @@ fn usp_to_string(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArgument
     rv.set(v.into());
 }
 
-fn usp_for_each(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn usp_for_each(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let callback = args.get(0);
     if !callback.is_function() { return; }
     let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(callback) };
@@ -460,7 +460,7 @@ fn usp_for_each(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments
     }
 }
 
-fn usp_entries(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_entries(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() {
@@ -471,7 +471,7 @@ fn usp_entries(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
     rv.set(arr.into());
 }
 
-fn usp_keys(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_keys(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() {
@@ -485,7 +485,7 @@ fn usp_keys(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mu
     rv.set(arr.into());
 }
 
-fn usp_values(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn usp_values(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let Some(pairs) = usp_get_pairs(scope, args.this()) else { return };
     let arr = v8::Array::new(scope, pairs.length() as i32);
     for i in 0..pairs.length() {

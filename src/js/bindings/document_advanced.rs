@@ -4,7 +4,7 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_mut, arena_ref, unwrap_node_id, wrap_node};
 
 pub(super) fn create_event(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -19,7 +19,7 @@ pub(super) fn create_event(
     let obj = super::event_constructors::build_base_event(scope, "", &args);
 
     // initEvent method (legacy DOM Level 2) — overrides type/bubbles/cancelable
-    let init = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+    let init = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         let this = args.this();
         let type_val = args.get(0).to_rust_string_lossy(scope);
         let bubbles = if args.length() > 1 { args.get(1).boolean_value(scope) } else { false };
@@ -43,7 +43,7 @@ pub(super) fn create_event(
         let null_val = v8::null(scope);
         obj.set(scope, k.into(), null_val.into());
 
-        let init_custom = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+        let init_custom = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
             let this = args.this();
             let type_val = args.get(0).to_rust_string_lossy(scope);
             let bubbles = if args.length() > 1 { args.get(1).boolean_value(scope) } else { false };
@@ -68,7 +68,7 @@ pub(super) fn create_event(
 
     // For ErrorEvent: add initErrorEvent method
     if is_error {
-        let init_error = v8::Function::new(scope, |scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
+        let init_error = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
             let this = args.this();
             let type_val = args.get(0).to_rust_string_lossy(scope);
             let bubbles = if args.length() > 1 { args.get(1).boolean_value(scope) } else { false };
@@ -115,12 +115,12 @@ pub(super) fn create_event(
 }
 
 pub(super) fn create_range(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let range = v8::Object::new(scope);
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["setStart", "setEnd", "setStartBefore", "setStartAfter",
                    "setEndBefore", "setEndAfter", "collapse", "selectNode",
                    "selectNodeContents", "deleteContents", "insertNode",
@@ -153,7 +153,7 @@ pub(super) fn create_range(
     range.set(scope, k.into(), clone_range.into());
 
     // getBoundingClientRect
-    let gbcr = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gbcr = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let obj = v8::Object::new(scope);
         let zero = v8::Number::new(scope, 0.0);
         for name in &["top", "left", "right", "bottom", "width", "height", "x", "y"] {
@@ -166,14 +166,14 @@ pub(super) fn create_range(
     range.set(scope, k.into(), gbcr.into());
 
     // getClientRects
-    let gcr = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let gcr = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Array::new(scope, 0).into());
     }).unwrap();
     let k = v8::String::new(scope, "getClientRects").unwrap();
     range.set(scope, k.into(), gcr.into());
 
     // cloneContents
-    let clone_contents = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let clone_contents = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let arena = crate::js::templates::arena_mut(scope);
         let frag = arena.new_node(NodeData::Document);
         rv.set(wrap_node(scope, frag).into());
@@ -186,7 +186,7 @@ pub(super) fn create_range(
     range.set(scope, k.into(), clone_contents.into());
 
     // toString
-    let to_str = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let to_str = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::String::new(scope, "").unwrap().into());
     }).unwrap();
     let k = v8::String::new(scope, "toString").unwrap();
@@ -196,7 +196,7 @@ pub(super) fn create_range(
 }
 
 pub(super) fn create_contextual_fragment(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -230,7 +230,7 @@ const FILTER_REJECT: u16 = 2;
 const FILTER_SKIP: u16 = 3;
 
 /// Get the root NodeId stored in the walker's private field.
-fn tw_root_id(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -> Option<NodeId> {
+fn tw_root_id(scope: &mut v8::PinnedRef<v8::HandleScope>, walker: v8::Local<v8::Object>) -> Option<NodeId> {
     let pk = v8::String::new(scope, "__rootId").unwrap();
     let hidden_key = v8::Private::for_api(scope, Some(pk));
     walker.get_private(scope, hidden_key)
@@ -239,7 +239,7 @@ fn tw_root_id(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -> Opt
 }
 
 /// Get the currentNode's NodeId from the walker.
-fn tw_current_id(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -> Option<NodeId> {
+fn tw_current_id(scope: &mut v8::PinnedRef<v8::HandleScope>, walker: v8::Local<v8::Object>) -> Option<NodeId> {
     let k = v8::String::new(scope, "currentNode").unwrap();
     let val = walker.get(scope, k.into())?;
     if !val.is_object() { return None; }
@@ -248,7 +248,7 @@ fn tw_current_id(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -> 
 }
 
 /// Set currentNode on the walker and return the wrapped node.
-fn tw_set_current<'s>(scope: &mut v8::HandleScope<'s>, walker: v8::Local<v8::Object>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
+fn tw_set_current<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>, walker: v8::Local<v8::Object>, node_id: NodeId) -> v8::Local<'s, v8::Object> {
     let wrapped = wrap_node(scope, node_id);
     let k = v8::String::new(scope, "currentNode").unwrap();
     walker.set(scope, k.into(), wrapped.into());
@@ -256,7 +256,7 @@ fn tw_set_current<'s>(scope: &mut v8::HandleScope<'s>, walker: v8::Local<v8::Obj
 }
 
 /// Get whatToShow from the walker.
-fn tw_what_to_show(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -> u32 {
+fn tw_what_to_show(scope: &mut v8::PinnedRef<v8::HandleScope>, walker: v8::Local<v8::Object>) -> u32 {
     let k = v8::String::new(scope, "whatToShow").unwrap();
     walker.get(scope, k.into())
         .and_then(|v| v.uint32_value(scope))
@@ -267,7 +267,7 @@ fn tw_what_to_show(scope: &mut v8::HandleScope, walker: v8::Local<v8::Object>) -
 /// Returns FILTER_ACCEPT, FILTER_REJECT, or FILTER_SKIP.
 /// Returns None if a JS exception was thrown.
 fn tw_accept_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     walker: v8::Local<v8::Object>,
     node_id: NodeId,
     what_to_show: u32,
@@ -322,7 +322,7 @@ fn tw_accept_node(
         // Filter is a function
         let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(filter_val) };
         let undefined = v8::undefined(scope);
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let ret = func.call(try_catch, undefined.into(), &[node_wrapped.into()]);
         if try_catch.has_caught() {
             // Re-set active = false, propagate exception
@@ -347,7 +347,7 @@ fn tw_accept_node(
         if let Some(method) = method_val {
             if method.is_function() {
                 let func = unsafe { v8::Local::<v8::Function>::cast_unchecked(method) };
-                let try_catch = &mut v8::TryCatch::new(scope);
+                crate::try_catch!(let try_catch, scope);
                 let ret = func.call(try_catch, filter_val, &[node_wrapped.into()]);
                 if try_catch.has_caught() {
                     let active_pk = v8::String::new(try_catch, "__active").unwrap();
@@ -403,7 +403,7 @@ fn first_following_not_following_root(arena: &Arena, node: NodeId, root: NodeId)
 
 
 pub(super) fn create_tree_walker(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -483,7 +483,7 @@ pub(super) fn create_tree_walker(
 
 /// TreeWalker.parentNode()
 fn tw_parent_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -517,7 +517,7 @@ fn tw_parent_node(
 
 /// TreeWalker.firstChild()
 fn tw_first_child(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -527,7 +527,7 @@ fn tw_first_child(
 
 /// TreeWalker.lastChild()
 fn tw_last_child(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -537,7 +537,7 @@ fn tw_last_child(
 
 /// Generic traverse_children — `first` = true for firstChild, false for lastChild.
 fn tw_traverse_children(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     walker: v8::Local<v8::Object>,
     rv: &mut v8::ReturnValue,
     first: bool,
@@ -591,7 +591,7 @@ fn tw_traverse_children(
 
 /// TreeWalker.nextSibling()
 fn tw_next_sibling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -601,7 +601,7 @@ fn tw_next_sibling(
 
 /// TreeWalker.previousSibling()
 fn tw_previous_sibling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -611,7 +611,7 @@ fn tw_previous_sibling(
 
 /// Generic traverse_siblings — `next` = true for nextSibling, false for previousSibling.
 fn tw_traverse_siblings(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     walker: v8::Local<v8::Object>,
     rv: &mut v8::ReturnValue,
     next: bool,
@@ -675,7 +675,7 @@ fn tw_traverse_siblings(
 
 /// TreeWalker.previousNode()
 fn tw_previous_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -744,7 +744,7 @@ fn tw_previous_node(
 
 /// TreeWalker.nextNode()
 fn tw_next_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -846,7 +846,7 @@ fn depth_first_next_bounded(arena: &Arena, node: NodeId, root: NodeId) -> Option
 }
 
 pub(super) fn create_node_iterator(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -923,7 +923,7 @@ pub(super) fn create_node_iterator(
 }
 
 /// Get the referenceNode's NodeId from the iterator.
-fn ni_reference_id(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>) -> Option<NodeId> {
+fn ni_reference_id(scope: &mut v8::PinnedRef<v8::HandleScope>, ni: v8::Local<v8::Object>) -> Option<NodeId> {
     let k = v8::String::new(scope, "referenceNode").unwrap();
     let val = ni.get(scope, k.into())?;
     if !val.is_object() { return None; }
@@ -932,7 +932,7 @@ fn ni_reference_id(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>) -> Op
 }
 
 /// Get pointerBeforeReferenceNode.
-fn ni_pointer_before(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>) -> bool {
+fn ni_pointer_before(scope: &mut v8::PinnedRef<v8::HandleScope>, ni: v8::Local<v8::Object>) -> bool {
     let k = v8::String::new(scope, "pointerBeforeReferenceNode").unwrap();
     ni.get(scope, k.into())
         .map(|v| v.boolean_value(scope))
@@ -940,7 +940,7 @@ fn ni_pointer_before(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>) -> 
 }
 
 /// Set referenceNode and pointerBeforeReferenceNode.
-fn ni_set_reference(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>, node_id: NodeId, before: bool) {
+fn ni_set_reference(scope: &mut v8::PinnedRef<v8::HandleScope>, ni: v8::Local<v8::Object>, node_id: NodeId, before: bool) {
     let wrapped = wrap_node(scope, node_id);
     let k = v8::String::new(scope, "referenceNode").unwrap();
     ni.set(scope, k.into(), wrapped.into());
@@ -952,7 +952,7 @@ fn ni_set_reference(scope: &mut v8::HandleScope, ni: v8::Local<v8::Object>, node
 /// accept_node for NodeIterator — same filtering as TreeWalker.
 /// tw_accept_node is reused (it works on any object with __active, __filter privates).
 fn ni_accept_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     ni: v8::Local<v8::Object>,
     node_id: NodeId,
     what_to_show: u32,
@@ -963,7 +963,7 @@ fn ni_accept_node(
 
 /// NodeIterator.nextNode() — WHATWG DOM §6.1
 fn ni_next_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1020,7 +1020,7 @@ fn ni_next_node(
 
 /// NodeIterator.previousNode() — WHATWG DOM §6.1
 fn ni_previous_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1077,13 +1077,13 @@ fn ni_previous_node(
 
 /// NodeIterator.detach() — no-op per spec.
 fn ni_detach(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {}
 
 pub(super) fn element_from_point(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1099,7 +1099,7 @@ pub(super) fn element_from_point(
 }
 
 pub(super) fn elements_from_point(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1115,7 +1115,7 @@ pub(super) fn elements_from_point(
 }
 
 pub(super) fn document_get_selection(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1127,12 +1127,12 @@ pub(super) fn document_get_selection(
     let k = v8::String::new(scope, "isCollapsed").unwrap();
     let v = v8::Boolean::new(scope, true);
     obj.set(scope, k.into(), v.into());
-    let to_str = v8::Function::new(scope, |scope: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
+    let to_str = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::String::new(scope, "").unwrap().into());
     }).unwrap();
     let k = v8::String::new(scope, "toString").unwrap();
     obj.set(scope, k.into(), to_str.into());
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>, _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     for name in &["removeAllRanges", "addRange"] {
         let k = v8::String::new(scope, name).unwrap();
         obj.set(scope, k.into(), noop.into());
@@ -1141,14 +1141,14 @@ pub(super) fn document_get_selection(
 }
 
 pub(super) fn document_noop(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
 }
 
 pub(super) fn document_exec_command(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1156,7 +1156,7 @@ pub(super) fn document_exec_command(
 }
 
 pub(super) fn adopt_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1198,7 +1198,7 @@ pub(super) fn adopt_node(
 }
 
 pub(super) fn import_node(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

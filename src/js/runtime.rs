@@ -1,10 +1,11 @@
 /// V8 runtime lifecycle: initialization, script extraction, execution.
 ///
-/// Creates a fresh V8 isolate per render() call. Scripts are extracted
-/// from the parsed DOM tree and executed in document order.
+/// Uses long-lived isolates: one `v8::OwnedIsolate` per executor thread in
+/// the `JsPool`, created once at worker startup. Each render gets a fresh
+/// `v8::Context` on the worker's isolate and runs scripts in document order.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, Once};
+use std::sync::Once;
 
 use crate::dom::arena::{Arena, NodeId};
 use crate::dom::node::NodeData;
@@ -18,24 +19,21 @@ pub struct ArenaPtr(pub *mut Arena);
 
 static V8_INIT: Once = Once::new();
 
-/// Serialize isolate creation to work around a race in V8 135's
-/// JSDispatchTable freelist during concurrent Isolate::Init.
-static ISOLATE_LOCK: Mutex<()> = Mutex::new(());
-
 /// Ensure V8 platform is initialized exactly once per process.
 ///
-/// ICU data is loaded via set_common_data_74() BEFORE V8::initialize(),
-/// matching the pattern used by Deno (deno_core/runtime/setup.rs).
-/// Uses deno_core_icudata v0.74.0 (ICU 74 data, matching v8 crate 135.1.1).
-/// The order is critical:
-/// 1. set_common_data_74() — provide ICU locale data
-/// 2. V8::initialize_platform() — create V8 platform
-/// 3. V8::initialize() — start V8 engine
+/// Uses `deno_core_icudata` (ICU 77 data) to match the ICU version bundled
+/// with the v8 147 crate. Must call `v8::icu::set_common_data_77()` BEFORE
+/// `V8::initialize()` (Deno's pattern from `deno_core/runtime/setup.rs`).
+///
+/// Order is critical:
+/// 1. `set_common_data_77()` — provide ICU locale data
+/// 2. `V8::initialize_platform()` — create V8 platform
+/// 3. `V8::initialize()` — start V8 engine
 fn ensure_v8_initialized() {
     V8_INIT.call_once(|| {
         // Load ICU data FIRST — before any V8 initialization.
         log::info!("loading ICU data ({} bytes)...", deno_core_icudata::ICU_DATA.len());
-        match v8::icu::set_common_data_74(deno_core_icudata::ICU_DATA) {
+        match v8::icu::set_common_data_77(deno_core_icudata::ICU_DATA) {
             Ok(()) => log::info!("ICU data loaded successfully"),
             Err(code) => log::error!("ICU data load failed with error code {}", code),
         }
@@ -59,6 +57,11 @@ enum ScriptSource {
 struct ScriptInfo {
     source: ScriptSource,
     name: String,
+    /// For external `<script src="...">` scripts, the fully-resolved absolute
+    /// URL after joining `src` with the document's base URL. None for inline
+    /// scripts. Set when the script is fetched; used as the module's own URL
+    /// for external module scripts.
+    resolved_url: Option<String>,
     node_id: Option<NodeId>, // <script> element node for document.currentScript
     is_module: bool,         // <script type="module">
 }
@@ -131,7 +134,122 @@ unsafe extern "C" fn oom_error_handler(
     );
 }
 
+/// Build a fully-configured V8 isolate ready to host renders.
+///
+/// Called ONCE per executor thread at worker startup. The returned isolate has:
+/// - 1 GB heap with 4× near-limit expansion callback,
+/// - OOM error handler installed,
+/// - module loader callbacks registered,
+/// - DOM templates installed in an isolate slot.
+///
+/// Per-render state slots are NOT initialized here — call
+/// `reset_per_render_slots` at the start of each render.
+///
+/// Safe to call concurrently from multiple worker threads — v8 14.7 fixed the
+/// JSDispatchTable race that plagued v8 135, so no serialization is needed.
+pub fn create_isolate_for_worker() -> v8::OwnedIsolate {
+    ensure_v8_initialized();
+
+    log::info!("creating V8 isolate (1 GB heap)...");
+    let t0 = std::time::Instant::now();
+    let params = v8::CreateParams::default()
+        .heap_limits(0, 1024 * 1024 * 1024);
+    let mut isolate = v8::Isolate::new(params);
+    log::debug!("V8 isolate created in {:?}, configuring...", t0.elapsed());
+
+    isolate.add_near_heap_limit_callback(near_heap_limit_callback, std::ptr::null_mut());
+    isolate.set_oom_error_handler(oom_error_handler);
+    super::modules::register_module_callbacks(&mut isolate);
+
+    log::debug!("installing DOM templates on isolate...");
+    super::templates::install_dom_templates(&mut isolate);
+
+    log::info!("V8 isolate ready in {:?}", t0.elapsed());
+    isolate
+}
+
+/// Reset all per-render isolate slots to fresh state.
+///
+/// This is the **single source of truth** for per-render state initialization.
+/// In the long-lived isolate model (one isolate per worker thread), this is
+/// called at the start of every render. In the current per-render isolate
+/// model, it's called once per isolate (which is the same thing).
+///
+/// **Adding a new per-render slot:** add the `set_slot` call HERE, not in any
+/// binding's `install` function. The state-isolation tests in
+/// `tests/test_state_isolation.py` will catch a missing reset by failing
+/// when render 2 sees render 1's state.
+///
+/// `DomTemplates` is intentionally NOT reset — it's per-isolate, not per-render.
+pub fn reset_per_render_slots(
+    isolate: &mut v8::Isolate,
+    arena_ptr: *mut Arena,
+    base_url: Option<&str>,
+    fetch_context: crate::net::fetch::FetchContext,
+) {
+    log::debug!(
+        "resetting per-render isolate slots (arena={:p}, base_url={:?})",
+        arena_ptr, base_url,
+    );
+    isolate.set_slot(ArenaPtr(arena_ptr));
+    isolate.set_slot(WrapperCache { map: HashMap::new() });
+    isolate.set_slot(crate::js::templates::ChildNodesCache { map: HashMap::new() });
+    isolate.set_slot(super::timers::TimerQueue::new());
+    isolate.set_slot(super::events::EventListenerMap::new());
+    isolate.set_slot(super::bindings::storage::WebStorage::new());
+    isolate.set_slot(super::bindings::location::BaseUrl(base_url.map(|s| s.to_string())));
+    isolate.set_slot(super::bindings::document::DocumentCookie(String::new()));
+    isolate.set_slot(super::bindings::document::CurrentScriptId(None));
+    isolate.set_slot(super::fetch::FetchQueue::new());
+    isolate.set_slot(super::mutation_observer::MutationObserverState::new());
+    isolate.set_slot(super::bindings::observers::IntersectionObserverState::new());
+    isolate.set_slot(super::bindings::observers::ResizeObserverState::new());
+    isolate.set_slot(super::bindings::observers::PerformanceObserverState::new());
+    isolate.set_slot(super::modules::ModuleMap::new());
+    isolate.set_slot(super::bindings::custom_elements::CustomElementState {
+        definitions: HashMap::new(),
+    });
+    isolate.set_slot(fetch_context);
+}
+
 fn execute_scripts_inner(
+    arena: &mut Arena,
+    base_url: Option<&str>,
+    fetch_context: &crate::net::fetch::FetchContext,
+) -> Result<Vec<String>, EngineError> {
+    execute_scripts_via_pool(arena, base_url, fetch_context, None)
+}
+
+/// Public dispatch entry point.
+///
+/// `pool=None` routes through the process-global default pool. `pool=Some(p)`
+/// uses the caller-supplied pool (e.g. a Python `Client`'s per-instance pool).
+pub fn execute_scripts_via_pool(
+    arena: &mut Arena,
+    base_url: Option<&str>,
+    fetch_context: &crate::net::fetch::FetchContext,
+    pool: Option<&super::executor::JsPool>,
+) -> Result<Vec<String>, EngineError> {
+    // Fast path: pages with no scripts skip the executor pool entirely (no V8
+    // dispatch overhead, no isolate work).
+    let url_label = base_url.unwrap_or("<inline>");
+    if !arena_has_scripts(arena) {
+        log::debug!("[{}] no scripts, skipping V8", url_label);
+        return Ok(vec![]);
+    }
+
+    let arena_ptr = arena as *mut Arena;
+    match pool {
+        Some(p) => p.execute(arena_ptr, base_url, fetch_context.clone()),
+        None => super::executor::default_pool()
+            .execute(arena_ptr, base_url, fetch_context.clone()),
+    }
+}
+
+/// Worker-side render entry point. Called by the executor thread with its
+/// long-lived isolate. Does extract + fetch + V8 work and returns errors.
+pub(crate) fn run_one_render(
+    isolate: &mut v8::Isolate,
     arena: &mut Arena,
     base_url: Option<&str>,
     fetch_context: &crate::net::fetch::FetchContext,
@@ -153,22 +271,21 @@ fn execute_scripts_inner(
 
     // Resolve external script URLs and build Request objects
     let mut errors = Vec::new();
-    let external_requests: Vec<(usize, crate::net::request::Request)> = scripts
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| match &s.source {
-            ScriptSource::External(src) => {
-                match crate::net::fetch::resolve_url(src, base_url) {
-                    Ok(url) => Some((i, crate::net::request::Request::script(url))),
-                    Err(e) => {
-                        errors.push(e.to_string());
-                        None
-                    }
+    let mut external_requests: Vec<(usize, crate::net::request::Request)> = Vec::new();
+    for i in 0..scripts.len() {
+        if let ScriptSource::External(src) = &scripts[i].source {
+            match crate::net::fetch::resolve_url(src, base_url) {
+                Ok(url) => {
+                    // Stash the resolved URL so later phases (notably module
+                    // execution) use it as the module's own URL for the
+                    // ModuleMap and for resolving this module's imports.
+                    scripts[i].resolved_url = Some(url.as_str().to_string());
+                    external_requests.push((i, crate::net::request::Request::script(url)));
                 }
+                Err(e) => errors.push(e.to_string()),
             }
-            _ => None,
-        })
-        .collect();
+        }
+    }
 
     // Fetch external scripts in parallel via the unified pipeline (uses shared cache/cookies)
     let fetch_start = std::time::Instant::now();
@@ -200,58 +317,16 @@ fn execute_scripts_inner(
         );
     }
 
-    ensure_v8_initialized();
-
-    // Serialize isolate creation — V8 135's JSDispatchTable has a race
-    // condition in TryAllocateEntryFromFreelist during concurrent Isolate::Init.
-    // The lock is released immediately after creation; script execution is parallel.
-    log::info!("[{}] acquiring isolate lock...", url_label);
-    let isolate = &mut {
-        let _guard = ISOLATE_LOCK.lock().unwrap();
-        log::info!("[{}] creating V8 isolate (1GB heap)...", url_label);
-        // 1 GB heap limit. Chrome uses ~80 MB for typical sites; 1 GB gives
-        // ample headroom for heavy pages without unbounded growth.
-        let params = v8::CreateParams::default()
-            .heap_limits(0, 1024 * 1024 * 1024);
-        let mut iso = v8::Isolate::new(params);
-        log::info!("[{}] V8 isolate created, configuring...", url_label);
-        iso.add_near_heap_limit_callback(near_heap_limit_callback, std::ptr::null_mut());
-        iso.set_oom_error_handler(oom_error_handler);
-        super::modules::register_module_callbacks(&mut iso);
-        iso
-    };
-    log::info!("[{}] V8 isolate ready in {:?}", url_label, t0.elapsed());
-
-    // Store arena pointer and wrapper cache in isolate slots
+    // Per-render slots — single source of truth. The isolate is long-lived
+    // and serves many renders; this overwrites prior slot values with fresh
+    // empty containers. v8::Globals from prior contexts are dropped here.
+    log::debug!("[{}] resetting per-render isolate slots...", url_label);
     let arena_ptr = arena as *mut Arena;
-    isolate.set_slot(ArenaPtr(arena_ptr));
-    isolate.set_slot(WrapperCache {
-        map: HashMap::new(),
-    });
-    isolate.set_slot(crate::js::templates::ChildNodesCache {
-        map: HashMap::new(),
-    });
-    isolate.set_slot(super::timers::TimerQueue::new());
-    isolate.set_slot(super::events::EventListenerMap::new());
-    isolate.set_slot(super::bindings::storage::WebStorage::new());
-    isolate.set_slot(super::bindings::location::BaseUrl(base_url.map(|s| s.to_string())));
-    isolate.set_slot(super::bindings::document::DocumentCookie(String::new()));
-    isolate.set_slot(super::bindings::document::CurrentScriptId(None));
-    isolate.set_slot(super::fetch::FetchQueue::new());
-    isolate.set_slot(super::mutation_observer::MutationObserverState::new());
-    isolate.set_slot(super::bindings::observers::IntersectionObserverState::new());
-    isolate.set_slot(super::bindings::observers::ResizeObserverState::new());
-    isolate.set_slot(super::bindings::observers::PerformanceObserverState::new());
-    isolate.set_slot(super::modules::ModuleMap::new());
-    isolate.set_slot(fetch_context.clone());
+    reset_per_render_slots(isolate, arena_ptr, base_url, fetch_context.clone());
 
-    log::info!("[{}] creating handle scope...", url_label);
-    let handle_scope = &mut v8::HandleScope::new(isolate);
-
-    // Create DOM templates (pre-context, in HandleScope<()>)
-    log::info!("[{}] creating DOM templates...", url_label);
-    let dom_templates = super::templates::create_dom_templates(handle_scope);
-    handle_scope.set_slot(dom_templates);
+    log::debug!("[{}] creating handle scope...", url_label);
+    {
+    v8::scope!(let handle_scope, isolate);
 
     // Create global template and context
     log::info!("[{}] creating global template...", url_label);
@@ -326,26 +401,76 @@ fn execute_scripts_inner(
         }
     }
 
-    // Phase 2: Execute module scripts in document order (deferred per spec)
+    // Phase 2: Module scripts (deferred per spec). Split into three sub-phases
+    // matching browser behavior:
+    //   2A. Prepare (compile + register in ModuleMap) every module script.
+    //   2B. Link all prepared modules in document order.
+    //   2C. Evaluate all linked modules in document order, driving TLA to
+    //       settlement between each.
+    //
+    // Step 2B must finish before 2C starts: V8's `InstantiateModule` walks
+    // the dep graph and calls `PrepareInstantiate` on each dep. If any dep is
+    // currently kEvaluating (because a sibling top-level module's TLA is
+    // still pending), V8's internal DCHECK fires
+    // (`v8/src/objects/module.cc:240`: `DCHECK_NE(status, kEvaluating)`).
+    // Linking before any evaluation guarantees no kEvaluating state can be
+    // observed during linking.
+    //
+    // Per spec ([HTML §8.1.3 "Processing model for module scripts"](https://html.spec.whatwg.org/multipage/webappapis.html#processing-model-for-module-scripts))
+    // this matches "run a module script" which links once and then evaluates.
+    let mut prepared_modules: Vec<(usize, super::modules::PreparedModule)> =
+        Vec::new();
     for (i, script) in scripts.iter().enumerate() {
         if !script.is_module {
-            continue; // Already executed in phase 1
+            continue;
         }
         let source = match &script.source {
             ScriptSource::Inline(s) if !s.is_empty() => s.as_str(),
             _ => continue,
         };
-        // document.currentScript is null during module execution per spec
+        let prep_result = match &script.resolved_url {
+            Some(resolved) => super::modules::prepare_external_module(scope, source, resolved),
+            None => super::modules::prepare_inline_module(scope, source, base_url),
+        };
+        match prep_result {
+            Ok(prepared) => prepared_modules.push((i, prepared)),
+            Err(e) => {
+                scripts_errored += 1;
+                log::warn!("[{}] module prepare \"{}\": {}", url_label, script.name, e);
+                errors.push(e.to_string());
+            }
+        }
+    }
+
+    // 2B. Link all (V8 `InstantiateModule`). All modules are kUninstantiated
+    // before this sub-phase; none are kEvaluating.
+    for (i, prepared) in &prepared_modules {
         if let Some(cs) = scope.get_slot_mut::<super::bindings::document::CurrentScriptId>() {
             cs.0 = None;
         }
+        let script = &scripts[*i];
+        if let Err(e) = super::modules::link_prepared_module(scope, prepared) {
+            scripts_errored += 1;
+            log::warn!("[{}] module link \"{}\": {}", url_label, script.name, e);
+            errors.push(e.to_string());
+        }
+    }
+
+    // 2C. Evaluate all in document order. TLA in a module may leave it in
+    // kEvaluating state, but the next module's Evaluate tolerates this (V8's
+    // InstantiateModule is the only operation that trips on kEvaluating deps,
+    // and all instantiation is already done).
+    for (i, prepared) in &prepared_modules {
+        let script = &scripts[*i];
         let script_start = std::time::Instant::now();
         log::debug!(
-            "[{}] exec module {}/{} \"{}\" ({} bytes)",
+            "[{}] eval module {}/{} \"{}\"",
             url_label, i + 1, scripts.len(), script.name,
-            source.len(),
         );
-        match super::modules::execute_one_module(scope, source, &script.name, base_url) {
+        if let Some(cs) = scope.get_slot_mut::<super::bindings::document::CurrentScriptId>() {
+            cs.0 = None;
+        }
+        match super::modules::evaluate_prepared_module(scope, prepared) {
             Ok(()) => {
                 scripts_executed += 1;
                 log::debug!(
@@ -416,12 +541,34 @@ fn execute_scripts_inner(
         }
         log::trace!("[{}] drain round {}: fetches={}, timers={}", url_label, drain_round + 1, !no_fetches, !no_timers);
     }
+    } // end of v8::scope! block — ScopeStorage drops here
 
     log::info!(
         "[{}] total execution: {:?}, {} errors",
         url_label, t0.elapsed(), errors.len(),
     );
     Ok(errors)
+}
+
+/// Quick scan to check if the arena contains any <script> elements.
+/// Used to skip pool dispatch entirely on JS-free pages.
+fn arena_has_scripts(arena: &Arena) -> bool {
+    fn walk(arena: &Arena, node: NodeId) -> bool {
+        if let Some(data) = arena.element_data(node) {
+            if &*data.name.local == "script" {
+                return true;
+            }
+        }
+        let mut child = arena.nodes[node].first_child;
+        while let Some(c) = child {
+            if walk(arena, c) {
+                return true;
+            }
+            child = arena.nodes[c].next_sibling;
+        }
+        false
+    }
+    walk(arena, arena.document)
 }
 
 /// Walk the DOM tree depth-first, extract <script> elements in document order.
@@ -461,6 +608,7 @@ fn extract_scripts_recursive(
                 scripts.push(ScriptInfo {
                     source: ScriptSource::External(src.to_owned()),
                     name: format!("{}", src),
+                    resolved_url: None,
                     node_id: Some(node),
                     is_module,
                 });
@@ -470,6 +618,7 @@ fn extract_scripts_recursive(
                     scripts.push(ScriptInfo {
                         source: ScriptSource::Inline(text),
                         name: format!("inline-script-{}", *inline_idx),
+                        resolved_url: None,
                         node_id: Some(node),
                         is_module,
                     });
@@ -499,12 +648,12 @@ fn collect_script_text(arena: &Arena, node: NodeId) -> String {
 
 /// Compile and run a single script. Returns error on exception.
 fn execute_one_script(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     source: &str,
     name: &str,
     _script_id: usize,
 ) -> Result<(), EngineError> {
-    let try_catch = &mut v8::TryCatch::new(scope);
+    crate::try_catch!(let try_catch, scope);
 
     let source_str = v8::String::new(try_catch, source).ok_or_else(|| {
         EngineError::JsExecution {
@@ -542,15 +691,17 @@ fn execute_one_script(
 }
 
 /// Extract error info from a TryCatch scope.
-fn extract_js_error(try_catch: &mut v8::TryCatch<v8::HandleScope>) -> EngineError {
+fn extract_js_error(
+    try_catch: &mut v8::PinnedRef<v8::TryCatch<v8::HandleScope>>,
+) -> EngineError {
     let message = try_catch
         .exception()
-        .map(|e| e.to_rust_string_lossy(try_catch))
+        .map(|e: v8::Local<v8::Value>| e.to_rust_string_lossy(try_catch))
         .unwrap_or_else(|| "unknown JS error".into());
 
     let stack = try_catch
         .stack_trace()
-        .map(|s| s.to_rust_string_lossy(try_catch));
+        .map(|s: v8::Local<v8::Value>| s.to_rust_string_lossy(try_catch));
 
     EngineError::JsExecution { message, stack }
 }

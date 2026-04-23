@@ -3,13 +3,13 @@
 use super::formdata::{fd_get_pairs, fd_for_each, fd_entries, fd_keys, fd_values};
 
 /// Install the Headers constructor on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let headers_ctor = v8::Function::new(scope, headers_constructor).unwrap();
     let key = v8::String::new(scope, "Headers").unwrap();
     global.set(scope, key.into(), headers_ctor.into());
 }
 
-fn headers_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn headers_constructor(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let obj = v8::Object::new(scope);
     let pairs = v8::Array::new(scope, 0);
     let pk = v8::String::new(scope, "__pairs").unwrap();
@@ -63,7 +63,7 @@ fn headers_constructor(scope: &mut v8::HandleScope, args: v8::FunctionCallbackAr
     obj.set(scope, k.into(), values_fn.into());
     rv.set(obj.into());
 }
-fn headers_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn headers_get(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -78,7 +78,7 @@ fn headers_get(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
     }
     rv.set(v8::null(scope).into());
 }
-fn headers_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn headers_has(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     for i in 0..pairs.length() {
@@ -91,7 +91,7 @@ fn headers_has(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
     }
     rv.set(v8::Boolean::new(scope, false).into());
 }
-fn headers_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn headers_set(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let val = args.get(1);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
@@ -117,7 +117,7 @@ fn headers_set(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments,
         pairs.set_index(scope, pairs.length(), pair.into());
     }
 }
-fn headers_append(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn headers_append(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let val = args.get(1);
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
@@ -127,7 +127,7 @@ fn headers_append(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArgumen
     pair.set_index(scope, 1, val);
     pairs.set_index(scope, pairs.length(), pair.into());
 }
-fn headers_delete(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn headers_delete(scope: &mut v8::PinnedRef<v8::HandleScope>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let key = args.get(0).to_rust_string_lossy(scope).to_ascii_lowercase();
     let Some(pairs) = fd_get_pairs(scope, args.this()) else { return };
     let new_pairs = v8::Array::new(scope, 0);

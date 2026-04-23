@@ -27,12 +27,11 @@ pub struct CustomElementDefinition {
 }
 
 /// Install the `customElements` registry on the global object.
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
-    // Initialize state in isolate slot
-    scope.set_slot(CustomElementState {
-        definitions: HashMap::new(),
-    });
-
+///
+/// The `CustomElementState` isolate slot is initialized by
+/// `runtime::reset_per_render_slots`, NOT here — this function only wires
+/// the JS-facing API (define/get/whenDefined/upgrade) onto `globalThis`.
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let obj = v8::Object::new(scope);
 
     // define(name, constructor, options?)
@@ -51,7 +50,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
     obj.set(scope, k.into(), when_fn.into());
 
     // upgrade(element) — no-op for SSR
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope,
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
     let k = v8::String::new(scope, "upgrade").unwrap();
     obj.set(scope, k.into(), noop.into());
@@ -84,7 +83,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 
 /// Install the construction stack for custom element upgrade.
 /// MUST be called AFTER HTMLElement constructor is registered on the global.
-pub fn install_construction_stack(scope: &mut v8::HandleScope, _global: v8::Local<v8::Object>) {
+pub fn install_construction_stack(scope: &mut v8::PinnedRef<v8::HandleScope>, _global: v8::Local<v8::Object>) {
     // Construction stack + HTMLElement replacement for custom element upgrade.
     // When define() is called, existing elements get upgraded by invoking their
     // constructor. super() calls HTMLElement() which pops the construction stack
@@ -126,7 +125,7 @@ pub fn install_construction_stack(scope: &mut v8::HandleScope, _global: v8::Loca
 
 /// customElements.define(name, constructor, options?)
 fn ce_define(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -230,7 +229,7 @@ fn ce_define(
 
 /// Extract a named callback function from a prototype object.
 fn extract_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     proto: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<v8::Global<v8::Function>> {
@@ -246,7 +245,7 @@ fn extract_callback(
 
 /// customElements.get(name) — returns constructor or undefined
 fn ce_get(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -264,7 +263,7 @@ fn ce_get(
 
 /// customElements.whenDefined(name) — returns immediately resolved promise
 fn ce_when_defined(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -284,7 +283,7 @@ pub fn is_custom_element_name(tag: &str) -> bool {
 
 /// Fire connectedCallback for a node if it's a registered custom element.
 pub fn fire_connected_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_obj: v8::Local<v8::Object>,
     tag: &str,
 ) {
@@ -296,7 +295,7 @@ pub fn fire_connected_callback(
     if let Some(ref cb_g) = cb_global {
         let cb = v8::Local::new(scope, cb_g);
         log::trace!("Firing connectedCallback for <{}>", tag);
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let args: &[v8::Local<v8::Value>] = &[];
         if cb.call(try_catch, node_obj.into(), args).is_none() {
             if let Some(exc) = try_catch.exception() {
@@ -308,7 +307,7 @@ pub fn fire_connected_callback(
 
 /// Fire disconnectedCallback for a node if it's a registered custom element.
 pub fn fire_disconnected_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_obj: v8::Local<v8::Object>,
     tag: &str,
 ) {
@@ -319,7 +318,7 @@ pub fn fire_disconnected_callback(
     if let Some(ref cb_g) = cb_global {
         let cb = v8::Local::new(scope, cb_g);
         log::trace!("Firing disconnectedCallback for <{}>", tag);
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let args: &[v8::Local<v8::Value>] = &[];
         if cb.call(try_catch, node_obj.into(), args).is_none() {
             if let Some(exc) = try_catch.exception() {
@@ -331,7 +330,7 @@ pub fn fire_disconnected_callback(
 
 /// Fire attributeChangedCallback if the attribute is in observedAttributes.
 pub fn fire_attribute_changed_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_obj: v8::Local<v8::Object>,
     tag: &str,
     attr_name: &str,
@@ -352,7 +351,7 @@ pub fn fire_attribute_changed_callback(
     if let Some(ref cb_g) = cb_global {
         let cb = v8::Local::new(scope, cb_g);
         log::trace!("Firing attributeChangedCallback for <{}> attr={}", tag, attr_name);
-        let try_catch = &mut v8::TryCatch::new(scope);
+        crate::try_catch!(let try_catch, scope);
         let name_val = v8::String::new(try_catch, attr_name).unwrap();
         let old_val: v8::Local<v8::Value> = match old_value {
             Some(s) => v8::String::new(try_catch, s).unwrap().into(),
@@ -396,7 +395,7 @@ fn collect_matching_elements(
 
 /// Upgrade a single custom element: invoke constructor, set prototype, fire callbacks.
 fn upgrade_element(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     node_id: crate::dom::NodeId,
     tag_name: &str,
 ) {
@@ -434,7 +433,7 @@ fn upgrade_element(
                 let upgrade_fn = unsafe { v8::Local::<v8::Function>::cast_unchecked(upgrade_fn_val) };
                 let undef = v8::undefined(scope);
                 let ctor_local2 = v8::Local::new(scope, &ctor_global);
-                let try_catch = &mut v8::TryCatch::new(scope);
+                crate::try_catch!(let try_catch, scope);
                 if upgrade_fn.call(try_catch, undef.into(), &[element_wrapper.into(), ctor_local2.into()]).is_none() {
                     if let Some(exc) = try_catch.exception() {
                         log::warn!(
@@ -464,7 +463,7 @@ fn upgrade_element(
 
         for (attr_name, attr_value) in attrs_to_fire {
             let cb = v8::Local::new(scope, attr_cb_global);
-            let try_catch = &mut v8::TryCatch::new(scope);
+            crate::try_catch!(let try_catch, scope);
             let name_val = v8::String::new(try_catch, &attr_name).unwrap();
             let null_val = v8::null(try_catch);
             let new_val = v8::String::new(try_catch, &attr_value).unwrap();
@@ -484,7 +483,7 @@ fn upgrade_element(
     if is_connected {
         if let Some(ref cc_global) = connected_cb {
             let cb = v8::Local::new(scope, cc_global);
-            let try_catch = &mut v8::TryCatch::new(scope);
+            crate::try_catch!(let try_catch, scope);
             if cb.call(try_catch, element_wrapper.into(), &[]).is_none() {
                 if let Some(exc) = try_catch.exception() {
                     log::warn!("connectedCallback error during upgrade of <{}>: {}", tag_name, exc.to_rust_string_lossy(try_catch));

@@ -7,15 +7,15 @@ use crate::dom::node::NodeData;
 use crate::js::templates::{arena_ref, unwrap_node_id};
 
 /// Install getContext on the Element ObjectTemplate (called during template setup).
-pub fn install_on_element(scope: &mut v8::HandleScope<()>, proto: &v8::Local<v8::ObjectTemplate>) {
+pub fn install_on_element(scope: &mut v8::PinnedRef<v8::HandleScope<()>>, proto: &v8::Local<v8::ObjectTemplate>) {
     use super::helpers::set_method;
     set_method(scope, proto, "getContext", get_context);
     log::debug!("Installed getContext on Element prototype");
 }
 
 /// Install Path2D and other canvas globals.
-pub fn install_globals(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
-    let path2d = v8::Function::new(scope, |_scope: &mut v8::HandleScope,
+pub fn install_globals(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
+    let path2d = v8::Function::new(scope, |_scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue| {
         // Path2D constructor stub — returns empty object (this)
     }).unwrap();
@@ -26,7 +26,7 @@ pub fn install_globals(scope: &mut v8::HandleScope, global: v8::Local<v8::Object
 
 /// HTMLCanvasElement.getContext(contextType) — returns 2D stub or null.
 fn get_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -71,11 +71,11 @@ fn get_context(
 }
 
 /// Create a stub CanvasRenderingContext2D with no-op draw methods.
-fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Object> {
+fn create_2d_context<'s, 'i>(scope: &mut v8::PinnedRef<'s, v8::HandleScope<'i>>) -> v8::Local<'s, v8::Object> {
     let ctx = v8::Object::new(scope);
 
     // No-op draw methods
-    let noop = v8::Function::new(scope, |_: &mut v8::HandleScope,
+    let noop = v8::Function::new(scope, |_: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, _: v8::ReturnValue| {}).unwrap();
 
     for name in &[
@@ -97,7 +97,7 @@ fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::O
     }
 
     // measureText(text) — returns {width: 0}
-    let measure = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let measure = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let result = v8::Object::new(scope);
         let k = v8::String::new(scope, "width").unwrap();
@@ -109,7 +109,7 @@ fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::O
     ctx.set(scope, k.into(), measure.into());
 
     // getImageData — returns stub {data: Uint8ClampedArray, width, height}
-    let get_image = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let get_image = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let w = args.get(2).uint32_value(scope).unwrap_or(1) as usize;
         let h = args.get(3).uint32_value(scope).unwrap_or(1) as usize;
@@ -134,7 +134,7 @@ fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::O
     ctx.set(scope, k.into(), get_image.into());
 
     // getTransform — returns DOMMatrix-like stub
-    let get_transform = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let get_transform = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         let m = v8::Object::new(scope);
         for (name, val) in &[("a", 1.0), ("b", 0.0), ("c", 0.0), ("d", 1.0), ("e", 0.0), ("f", 0.0)] {
@@ -148,7 +148,7 @@ fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::O
     ctx.set(scope, k.into(), get_transform.into());
 
     // getLineDash — returns empty array
-    let get_dash = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let get_dash = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Array::new(scope, 0).into());
     }).unwrap();
@@ -156,7 +156,7 @@ fn create_2d_context<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::O
     ctx.set(scope, k.into(), get_dash.into());
 
     // isPointInPath / isPointInStroke — return false
-    let false_fn = v8::Function::new(scope, |scope: &mut v8::HandleScope,
+    let false_fn = v8::Function::new(scope, |scope: &mut v8::PinnedRef<v8::HandleScope>,
         _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue| {
         rv.set(v8::Boolean::new(scope, false).into());
     }).unwrap();

@@ -2,7 +2,7 @@
 ///
 /// All methods are no-ops by default (output goes to log::debug).
 
-pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
+pub fn install(scope: &mut v8::PinnedRef<v8::HandleScope>, global: v8::Local<v8::Object>) {
     let console = v8::Object::new(scope);
 
     set_method(scope, console, "log", console_log);
@@ -16,7 +16,7 @@ pub fn install(scope: &mut v8::HandleScope, global: v8::Local<v8::Object>) {
 }
 
 fn set_method(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     obj: v8::Local<v8::Object>,
     name: &str,
     callback: impl v8::MapFnTo<v8::FunctionCallback>,
@@ -27,7 +27,7 @@ fn set_method(
 }
 
 fn console_log(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -36,7 +36,7 @@ fn console_log(
 }
 
 fn console_warn(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -45,7 +45,7 @@ fn console_warn(
 }
 
 fn console_error(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -54,7 +54,7 @@ fn console_error(
 }
 
 fn format_args_to_string(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinnedRef<v8::HandleScope>,
     args: &v8::FunctionCallbackArguments,
 ) -> String {
     let mut parts = Vec::with_capacity(args.length() as usize);
