@@ -250,13 +250,26 @@ class Client:
     # --- Config introspection + runtime update ---------------------------
 
     @property
-    def config(self) -> ClientConfig:
-        """Snapshot of the Client's current config.
+    def config(self) -> _ConfigView:
+        """Live-mutable config view.
 
-        Returns a **deep copy** — mutating the returned object does NOT affect
-        the live client. To change settings, use :meth:`update_config`.
+        Read attributes normally (``client.config.network.user_agent``).
+        Assignments at any depth push through to the Rust engine::
+
+            client.config.network.user_agent = "Bot/2.0"        # takes effect next fetch
+            client.config.emulation.locale = "ja-JP"
+            client.config.viewport.width = 1920
+
+        Launch-only fields raise ``ValueError`` at assignment time — you see
+        the error at the exact line you wrote, not later::
+
+            client.config.concurrency = 32              # ValueError immediately
+            client.config.chrome.args = ["--flag"]      # ValueError immediately
+
+        To get a plain ``ClientConfig`` (detached deep-copy, safe to mutate
+        without side effects), call ``client.config.snapshot()``.
         """
-        return self._config.model_copy(deep=True)
+        return _ConfigView(self, ())
 
     def update_config(
         self,
@@ -270,9 +283,9 @@ class Client:
         merge onto the current config (``client.update_config(user_agent="...",
         locale="ja-JP")``).
 
-        Raises ``ValueError`` if any launch-only field has changed — those
-        live in the Chrome process and can't be flipped after launch. Recreate
-        the Client for that. See :data:`_LAUNCH_ONLY_FIELDS` for the list.
+        Raises ``ValueError`` if any launch-only field has changed — those live
+        in the Chrome process and can't be flipped after launch. Recreate the
+        Client for that. See :data:`_LAUNCH_ONLY_FIELDS` for the list.
 
         Thread-safety: atomic swap. In-flight ``fetch()``/``screenshot()`` calls
         snapshot config at the start, so they won't see a torn state. Batches
@@ -286,14 +299,19 @@ class Client:
         if config is not None:
             new_config = config
         elif kwargs:
-            # Build a sparse partial from kwargs and merge on top of current.
             partial = _flat_kwargs_to_partial(kwargs)
             merged = _deep_merge(self._config.model_dump(), partial)
             new_config = ClientConfig.model_validate(merged)
         else:
-            return  # no-op
+            return
 
-        # Guard: reject launch-only field changes.
+        self._apply_config(new_config)
+
+    def _apply_config(self, new_config: ClientConfig) -> None:
+        """Validate launch-only invariants, push to Rust, store new config.
+
+        Used by both ``update_config()`` and the ``_ConfigView`` attribute proxy.
+        """
         old_data = self._config.model_dump()
         new_data = new_config.model_dump()
         for path in _LAUNCH_ONLY_FIELDS:
@@ -304,7 +322,6 @@ class Client:
                     f"requested {_get_nested(new_data, path)!r}). "
                     f"Create a new Client to change this setting."
                 )
-
         self._rust.update_config(new_data)
         self._config = new_config
 
@@ -483,6 +500,83 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
             raise TypeError(f"unknown fetch kwarg: {k!r}")
         data[k] = v
     return FetchConfig.model_validate(data)
+
+
+# ----------------------------------------------------------------------------
+# Live-mutable config view — returned by Client.config
+# ----------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel  # local alias for isinstance checks
+
+
+class _ConfigView:
+    """Live proxy over a Client's config. Reads from the Client's pydantic
+    model; writes route through ``Client._apply_config`` so Rust stays in sync.
+
+    Only ``_ConfigView`` and ``_client``/``_path`` attrs live on instances —
+    everything else is delegated to the underlying pydantic model. See
+    ``Client.config`` for the intended use.
+    """
+
+    __slots__ = ("_client", "_path")
+
+    def __init__(self, client: Client, path: tuple[str, ...]) -> None:
+        object.__setattr__(self, "_client", client)
+        object.__setattr__(self, "_path", path)
+
+    def _target(self) -> Any:
+        """Walk current pydantic config down ``self._path`` and return the node."""
+        cur: Any = self._client._config  # noqa: SLF001
+        for p in self._path:
+            cur = getattr(cur, p)
+        return cur
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        val = getattr(self._target(), name)
+        if isinstance(val, _BaseModel):
+            # Nested sub-config — return a view one level deeper so mutations
+            # at any depth still route through _apply_config.
+            return _ConfigView(self._client, self._path + (name,))
+        return val
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+            return
+        # Build a sparse partial dict representing just THIS change:
+        #   path=("network",), name="user_agent", value="Bot/2.0"
+        #   → {"network": {"user_agent": "Bot/2.0"}}
+        partial: dict[str, Any] = {}
+        cur = partial
+        for p in self._path:
+            cur[p] = {}
+            cur = cur[p]
+        cur[name] = value
+
+        merged = _deep_merge(self._client._config.model_dump(), partial)  # noqa: SLF001
+        new_cfg = ClientConfig.model_validate(merged)
+        self._client._apply_config(new_cfg)  # noqa: SLF001
+
+    def __repr__(self) -> str:
+        return f"<live config view of {self._target()!r}>"
+
+    def snapshot(self) -> ClientConfig | Any:
+        """Detached deep copy — mutating this does NOT affect the client.
+
+        Top-level returns ``ClientConfig``; sub-views return the respective
+        sub-config type (e.g. ``NetworkConfig``).
+        """
+        return self._target().model_copy(deep=True)
+
+    def model_dump(self, **kw: Any) -> dict[str, Any]:
+        """Forwarded — ``client.config.model_dump()`` Just Works."""
+        return self._target().model_dump(**kw)
+
+    def model_dump_json(self, **kw: Any) -> str:
+        """Forwarded — ``client.config.model_dump_json()`` Just Works."""
+        return self._target().model_dump_json(**kw)
 
 
 # --- update_config helpers (shared between Client.__init__ kwargs and update_config) ---
