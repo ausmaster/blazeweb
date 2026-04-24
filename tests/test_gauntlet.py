@@ -26,9 +26,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import pytest
-
 import blazeweb
+import pytest
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.real_sites]
 

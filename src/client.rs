@@ -22,22 +22,26 @@ use crate::error::{BlazeError, Result};
 use crate::pool::PagePool;
 use crate::result::{RawFetchOutput, RawRenderOutput};
 use crate::runtime;
+use crate::session::{parse_session_config, SessionInner};
 
 /// Chromium Browser + page pool + handler task. `config` is RwLock-wrapped so
 /// `update_config` can swap atomically without blocking in-flight fetches.
-struct ClientState {
-    runtime: Arc<tokio::runtime::Runtime>,
-    /// Keeps the browser process alive while the pool exists.
+///
+/// Visibility is `pub(crate)` so `session::SessionInner` can hold an
+/// `Arc<ClientState>` and reach `browser` / `pool` / `config` directly.
+pub(crate) struct ClientState {
     #[allow(dead_code)]
-    browser: Arc<Browser>,
-    pool: Arc<PagePool>,
-    handler_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    config: parking_lot::RwLock<ClientConfigRs>,
-    closed: std::sync::atomic::AtomicBool,
+    pub(crate) runtime: Arc<tokio::runtime::Runtime>,
+    /// Keeps the browser process alive while the pool exists.
+    pub(crate) browser: Arc<Browser>,
+    pub(crate) pool: Arc<PagePool>,
+    pub(crate) handler_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) config: parking_lot::RwLock<ClientConfigRs>,
+    pub(crate) closed: std::sync::atomic::AtomicBool,
 }
 
 impl ClientState {
-    fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 }
@@ -417,6 +421,21 @@ impl Client {
             }
         }
         Ok(results)
+    }
+
+    /// Construct a fresh interactive Session. Returns a `_SessionInner`
+    /// that the Python-side `blazeweb.Session` wrapper composes into the
+    /// public `async with` API. No page is allocated here — that happens
+    /// in `_SessionInner.open()` (i.e. on `__aenter__`).
+    #[pyo3(signature = (kwargs=None))]
+    fn new_session(
+        &self,
+        _py: Python<'_>,
+        kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
+    ) -> PyResult<SessionInner> {
+        self.check_open().map_err(PyErr::from)?;
+        let session_config = parse_session_config(kwargs).map_err(PyErr::from)?;
+        Ok(SessionInner::new(self.inner.clone(), session_config))
     }
 
     /// Explicit shutdown. Closes pooled pages, drops the Browser (chromium

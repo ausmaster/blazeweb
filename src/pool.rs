@@ -69,6 +69,13 @@ impl PagePool {
         self.size
     }
 
+    /// Expose the shared concurrency semaphore so the interactive Session API
+    /// can acquire permits on the same cap as `fetch()`. Sessions hold a
+    /// permit for their full lifetime.
+    pub fn semaphore(&self) -> Arc<Semaphore> {
+        self.sem.clone()
+    }
+
     /// Acquire a page (waits on Semaphore if pool is saturated).
     pub async fn acquire(self: &Arc<Self>) -> Result<PageGuard> {
         let t0 = std::time::Instant::now();

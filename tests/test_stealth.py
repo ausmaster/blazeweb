@@ -11,11 +11,9 @@ would have caught today's ``HeadlessChrome`` substring tripwire.
 
 from __future__ import annotations
 
-import pytest
-
 import blazeweb
+import pytest
 from blazeweb.presets import stealth
-
 
 # ---------------------------------------------------------------------------
 # UA / UA-CH on the wire

@@ -59,6 +59,7 @@ from blazeweb.config import (
     UserAgentMetadata,
     ViewportConfig,
 )
+from blazeweb.session import ConsoleMessage, LiveElement, Session
 
 # Configure Python-side logging at import from BLAZEWEB_LOG (defaults "warn").
 # The Rust side reads the same env var at PyO3 module init.
@@ -89,6 +90,10 @@ __all__ = [
     "ChromeConfig",
     "UserAgentBrandVersion",
     "UserAgentMetadata",
+    # Interactive Session API (async)
+    "Session",
+    "LiveElement",
+    "ConsoleMessage",
     # Logging
     "logger",
     "set_log_level",
@@ -460,6 +465,29 @@ class Client:
         # TODO: respect base_url — requires document.write or <base>. For v1 we ignore.
         del base_url
         return self.fetch(data_url, config=config)
+
+    # --- Interactive session (async) --------------------------------------
+
+    def session(self, **kwargs: Any) -> Session:
+        """Open a stateful, interactive browser session.
+
+        Yields a :class:`Session` to an ``async with`` block. The session
+        gets its own fresh chromium page (not pooled), and exposes async
+        methods for navigation, JS evaluation, clicks, form fills, console
+        observation, and request blocking. See :mod:`blazeweb.session`.
+
+        Sessions count against the Client's ``concurrency`` semaphore —
+        opening more sessions than that queues the new ones asynchronously.
+
+        Example::
+
+            async with client.session(viewport=(1280, 720)) as s:
+                await s.goto("https://example.com")
+                print(await s.content())
+        """
+        _client_log.debug("Client.session kwargs=%r", kwargs)
+        inner = self._rust.new_session(kwargs or None)
+        return Session(inner)
 
     # --- Lifecycle ---------------------------------------------------------
 
