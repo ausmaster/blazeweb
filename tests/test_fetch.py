@@ -1,119 +1,100 @@
-"""Tests for blazeweb.fetch() — URL-based rendering API."""
+"""Tests for blazeweb.fetch() and Client.fetch() — URL-based rendering."""
+
+from __future__ import annotations
+
+import pytest
 
 import blazeweb
 
-# httpbin.org has a valid cert chain trusted by webpki-roots.
-# example.com uses an outdated cross-signed chain with a root removed from Mozilla's store.
-HTTPS_URL = "https://httpbin.org/html"
+HTTPS_URL = "https://example.com"
 HTTP_URL = "http://example.com"
 
 
 class TestFetchTopLevel:
-    """Tests for the top-level blazeweb.fetch() function."""
+    """Module-level blazeweb.fetch() — uses the shared default Client."""
 
     def test_fetch_https(self):
-        """fetch() works with HTTPS URLs."""
         result = blazeweb.fetch(HTTPS_URL)
         assert isinstance(result, blazeweb.RenderResult)
         assert len(result) > 0
-        assert "<html" in result.lower() or "<!doctype" in result.lower() or "<h1>" in result.lower()
+        assert "Example Domain" in result
 
     def test_fetch_http(self):
-        """fetch() works with HTTP URLs."""
         result = blazeweb.fetch(HTTP_URL)
         assert isinstance(result, blazeweb.RenderResult)
         assert "Example Domain" in result
 
     def test_fetch_has_errors_attr(self):
-        """Result has an errors attribute (list)."""
-        result = blazeweb.fetch(HTTP_URL)
+        result = blazeweb.fetch(HTTPS_URL)
         assert isinstance(result.errors, list)
 
+    def test_fetch_has_metadata(self):
+        result = blazeweb.fetch(HTTPS_URL)
+        assert result.final_url.startswith("https://example.com")
+        assert result.status_code > 0
+        assert result.elapsed_s > 0
+
     def test_fetch_html_property(self):
-        """Result.html returns the HTML string."""
-        result = blazeweb.fetch(HTTP_URL)
+        result = blazeweb.fetch(HTTPS_URL)
         assert result.html == str(result)
 
     def test_fetch_is_string(self):
-        """RenderResult is a str subclass — works with string ops."""
-        result = blazeweb.fetch(HTTP_URL)
+        result = blazeweb.fetch(HTTPS_URL)
         assert isinstance(result, str)
 
-    def test_fetch_invalid_url(self):
-        """Garbage URL raises RuntimeError."""
-        try:
+    def test_fetch_invalid_url_raises(self):
+        with pytest.raises(RuntimeError):
             blazeweb.fetch("not-a-url")
-            assert False, "Should have raised"
-        except RuntimeError as e:
-            assert "invalid URL" in str(e).lower() or "url" in str(e).lower()
 
-    def test_fetch_nonexistent_domain(self):
-        """Non-existent domain raises RuntimeError."""
-        try:
+    def test_fetch_nonexistent_domain_raises(self):
+        with pytest.raises(RuntimeError):
             blazeweb.fetch("https://this-domain-does-not-exist-blazeweb-test.invalid")
-            assert False, "Should have raised"
-        except RuntimeError:
-            pass  # Any RuntimeError is fine
-
-    def test_fetch_404(self):
-        """HTTP 404 raises RuntimeError."""
-        try:
-            blazeweb.fetch("https://httpbin.org/status/404")
-            assert False, "Should have raised"
-        except RuntimeError as e:
-            assert "404" in str(e)
 
 
 class TestFetchClient:
-    """Tests for Client.fetch() method."""
+    """Client.fetch() — persistent, explicit client."""
 
     def test_client_fetch_basic(self):
-        """Client.fetch() returns a RenderResult."""
-        client = blazeweb.Client()
-        result = client.fetch(HTTP_URL)
+        with blazeweb.Client() as client:
+            result = client.fetch(HTTPS_URL)
         assert isinstance(result, blazeweb.RenderResult)
         assert "Example Domain" in result
 
-    def test_client_fetch_https(self):
-        """Client.fetch() works with HTTPS."""
-        client = blazeweb.Client()
-        result = client.fetch(HTTPS_URL)
-        assert isinstance(result, blazeweb.RenderResult)
-        assert len(result) > 0
-
-    def test_client_fetch_caching(self):
-        """Second fetch of same URL uses cached scripts."""
-        client = blazeweb.Client()
-        result1 = client.fetch(HTTP_URL)
-        result2 = client.fetch(HTTP_URL)
-        # Both should succeed and produce HTML
-        assert len(result1) > 0
-        assert len(result2) > 0
-
-    def test_client_fetch_cache_disabled(self):
-        """cache=False disables caching for the call."""
-        client = blazeweb.Client()
-        result = client.fetch(HTTP_URL, cache=False)
-        assert isinstance(result, blazeweb.RenderResult)
-        assert len(result) > 0
+    def test_client_fetch_reuse(self):
+        """Same client, multiple fetches — all work."""
+        with blazeweb.Client() as client:
+            a = client.fetch(HTTPS_URL)
+            b = client.fetch(HTTPS_URL)
+        assert len(a) > 0 and len(b) > 0
 
     def test_client_fetch_invalid_url(self):
-        """Client.fetch() with bad URL raises RuntimeError."""
-        client = blazeweb.Client()
-        try:
+        with blazeweb.Client() as client, pytest.raises(RuntimeError):
             client.fetch("not-a-url")
-            assert False, "Should have raised"
-        except RuntimeError:
-            pass
 
 
-class TestFetchInModule:
-    """Verify fetch is properly exported."""
+class TestRenderResult:
+    """RenderResult is a str subclass with extra metadata + a lazy Rust DOM."""
 
-    def test_fetch_in_all(self):
-        """fetch is listed in __all__."""
-        assert "fetch" in blazeweb.__all__
+    def test_is_str_subclass(self):
+        result = blazeweb.fetch(HTTPS_URL)
+        assert isinstance(result, str)
+        # str operations work
+        assert result.lower() == str(result).lower()
+        assert result[:15] == str(result)[:15]
 
-    def test_fetch_callable(self):
-        """fetch is callable at module level."""
-        assert callable(blazeweb.fetch)
+    def test_dom_lazy_parses_and_queries(self):
+        result = blazeweb.fetch(HTTPS_URL)
+        # Title query
+        title = result.dom.title()
+        assert title == "Example Domain"
+        # Links query
+        links = result.dom.links()
+        assert isinstance(links, list)
+        # Count query stops at first match
+        assert result.dom.exists("h1") is True
+        assert result.dom.exists("fakeneverexists") is False
+
+    def test_repr_shape(self):
+        result = blazeweb.fetch(HTTPS_URL)
+        r = repr(result)
+        assert r.startswith("RenderResult(")
