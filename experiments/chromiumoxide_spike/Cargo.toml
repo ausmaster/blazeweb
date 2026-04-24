@@ -1,0 +1,27 @@
+[package]
+name = "chromiumoxide_spike"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86.0"
+publish = false
+description = "chromiumoxide-based screenshot tool for perf comparison vs servo_spike"
+
+[[bin]]
+name = "chromiumoxide_spike"
+path = "src/main.rs"
+
+[dependencies]
+chromiumoxide = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "io-util", "io-std"] }
+futures = "0.3"
+url = "2"
+anyhow = "1"
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+strip = "symbols"
