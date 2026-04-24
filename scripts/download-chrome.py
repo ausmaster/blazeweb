@@ -16,9 +16,6 @@ Chrome across all platforms.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import io
-import os
 import platform
 import shutil
 import stat
@@ -42,10 +39,10 @@ CDN_BASE = "https://storage.googleapis.com/chrome-for-testing-public"
 #   zip_subdir   → directory inside the unzipped archive
 #   binary_filename → the executable we care about
 PLATFORMS: tuple[tuple[str, str, str, str], ...] = (
-    ("linux_x86_64",   "linux64",    "chrome-headless-shell-linux64",   "chrome-headless-shell"),
-    ("darwin_x86_64",  "mac-x64",    "chrome-headless-shell-mac-x64",   "chrome-headless-shell"),
-    ("darwin_aarch64", "mac-arm64",  "chrome-headless-shell-mac-arm64", "chrome-headless-shell"),
-    ("windows_x86_64", "win64",      "chrome-headless-shell-win64",     "chrome-headless-shell.exe"),
+    ("linux_x86_64",   "linux64",   "chrome-headless-shell-linux64",   "chrome-headless-shell"),
+    ("darwin_x86_64",  "mac-x64",   "chrome-headless-shell-mac-x64",   "chrome-headless-shell"),
+    ("darwin_aarch64", "mac-arm64", "chrome-headless-shell-mac-arm64", "chrome-headless-shell"),
+    ("windows_x86_64", "win64",     "chrome-headless-shell-win64",     "chrome-headless-shell.exe"),  # noqa: E501
 )
 
 
@@ -78,8 +75,11 @@ def download_for(
     """
     try:
         entry = next(p for p in PLATFORMS if p[0] == internal_key)
-    except StopIteration:
-        raise RuntimeError(f"no download config for platform {internal_key!r}. Known: {[p[0] for p in PLATFORMS]}")
+    except StopIteration as e:
+        known = [p[0] for p in PLATFORMS]
+        raise RuntimeError(
+            f"no download config for platform {internal_key!r}. Known: {known}"
+        ) from e
     _, cft_plat, zip_subdir, binary_name = entry
 
     dest_dir = dest_root / internal_key
@@ -87,7 +87,10 @@ def download_for(
 
     if dest_bin.is_file() and dest_bin.stat().st_size > 0 and not force:
         if verbose:
-            print(f"  [{internal_key}] already present at {dest_bin} — skip. Pass --force to re-download.")
+            print(
+                f"  [{internal_key}] already present at {dest_bin} — skip "
+                "(pass --force to re-download)."
+            )
         return dest_bin
 
     url = f"{CDN_BASE}/{CHROME_VERSION}/{cft_plat}/chrome-headless-shell-{cft_plat}.zip"
@@ -145,10 +148,22 @@ def main() -> int:
     default_dest = repo_root / "python" / "blazeweb" / "_binaries"
 
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--dest", default=str(default_dest), help="Destination dir (default: python/blazeweb/_binaries)")
-    p.add_argument("--all", action="store_true", help="Download for every supported platform, not just the current one")
-    p.add_argument("--platform", help="Internal platform key to download (overrides --all)")
-    p.add_argument("--force", action="store_true", help="Re-download even if binary is already present")
+    p.add_argument(
+        "--dest", default=str(default_dest),
+        help="Destination dir (default: python/blazeweb/_binaries)",
+    )
+    p.add_argument(
+        "--all", action="store_true",
+        help="Download for every supported platform, not just the current one",
+    )
+    p.add_argument(
+        "--platform",
+        help="Internal platform key to download (overrides --all)",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="Re-download even if binary is already present",
+    )
     args = p.parse_args()
 
     dest = Path(args.dest).resolve()

@@ -12,10 +12,8 @@ from __future__ import annotations
 import concurrent.futures
 import time
 
-import pytest
-
 import blazeweb
-
+import pytest
 
 URLS = [
     "https://example.com",
@@ -28,9 +26,11 @@ URLS = [
 def test_concurrent_fetches_complete(threads: int, concurrency: int):
     """N threads × N URLs all return valid RenderResult. No crashes, no empties."""
     work = URLS * (threads * 2)  # more work than threads
-    with blazeweb.Client(concurrency=concurrency) as client:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as pool:
-            results = list(pool.map(client.fetch, work))
+    with (
+        blazeweb.Client(concurrency=concurrency) as client,
+        concurrent.futures.ThreadPoolExecutor(max_workers=threads) as pool,
+    ):
+        results = list(pool.map(client.fetch, work))
     assert len(results) == len(work)
     for r in results:
         assert isinstance(r, blazeweb.RenderResult)

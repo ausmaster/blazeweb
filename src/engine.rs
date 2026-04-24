@@ -92,16 +92,9 @@ pub async fn capture_page(
             page.execute(SetExtraHttpHeadersParams::new(headers)).await?;
         }
 
-        // Navigate:
-        //   1. Subscribe to lifecycle-event streams BEFORE navigate (race-free).
-        //   2. page.goto(url) sends Page.navigate CDP and returns quickly on ack.
-        //   3. Explicitly await the configured lifecycle event on its stream.
-        //
-        // Crucially, we do NOT race goto with the event streams. `page.goto`
-        // returns in a few ms (just waits for the navigate ack), which is BEFORE
-        // any lifecycle event can fire. Racing them would cause the goto arm
-        // to win and we'd skip waiting entirely → empty/stale content. Ask me
-        // how I know.
+        // Subscribe BEFORE goto (race-free). goto returns on navigate ack
+        // (~5-10ms), well before any lifecycle event — DO NOT race it against
+        // these streams or the goto arm always wins.
         let wait_until = per_call
             .wait_until
             .or(per_shot.wait_until)
@@ -122,11 +115,9 @@ pub async fn capture_page(
         let t_nav_ack = t_goto.elapsed();
         log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
 
-        // Wait for the configured lifecycle event.
         match wait_until {
             WaitUntil::DomContentLoaded => {
-                // Prefer DCL; fall through to load for tiny/empty pages where
-                // DCL doesn't fire.
+                // DCL preferred; load covers tiny docs that never fire DCL.
                 tokio::select! {
                     _ = dcl_stream.next() => {
                         log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
@@ -164,10 +155,8 @@ pub async fn capture_page(
             .ok()
             .flatten()
             .unwrap_or_else(|| url.to_string());
-        // Status comes from the pool's persistent Network.responseReceived listener.
-        // Filled as soon as response headers arrive — before DCL, before load.
-        // Far more reliable than wait_for_navigation_response, which waits for
-        // frameStoppedLoading (roughly load event).
+        // Status from the pool's Network.responseReceived listener — captured
+        // on response headers, independent of wait_until choice.
         let status_code: u16 = guard.main_status().unwrap_or(0);
 
         let mut out = CaptureOutput {
@@ -230,19 +219,14 @@ pub async fn capture_page(
 
     let fut_result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await;
 
-    // Reset the pooled page to a clean state on error. Without this, a timed-out
-    // page returns to the pool still navigating, and the NEXT URL using it
-    // races with the previous load → cascading failures.
-    let had_error = matches!(&fut_result, Err(_) | Ok(Err(_)));
-    if had_error {
-        log::debug!(
-            target: "blazeweb::engine",
-            "[{url}] error path — resetting pooled page to about:blank"
-        );
-        let reset = async {
-            let _ = page.goto("about:blank").await;
-        };
-        let _ = tokio::time::timeout(Duration::from_secs(2), reset).await;
+    // On error, reset the page so the next URL on this tab isn't poisoned by
+    // a half-loaded predecessor.
+    if matches!(&fut_result, Err(_) | Ok(Err(_))) {
+        log::debug!(target: "blazeweb::engine", "[{url}] error — reset to about:blank");
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            async { let _ = page.goto("about:blank").await; },
+        ).await;
     }
 
     let mut result = fut_result

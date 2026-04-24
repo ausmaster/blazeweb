@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import blazeweb
+import pytest
 from blazeweb import ClientConfig, NetworkConfig, ViewportConfig
 
 

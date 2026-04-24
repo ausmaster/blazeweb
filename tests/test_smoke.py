@@ -3,9 +3,8 @@ convenience wrappers. If any of these fail, the engine is broken."""
 
 from __future__ import annotations
 
-import pytest
-
 import blazeweb
+import pytest
 
 URL = "https://example.com"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"

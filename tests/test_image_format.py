@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import blazeweb
 import pydantic
 import pytest
-
-import blazeweb
 
 URL = "https://example.com"
 

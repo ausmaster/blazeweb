@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 import blazeweb
+import pydantic
+import pytest
 from blazeweb import (
     ChromeConfig,
     ClientConfig,
@@ -77,7 +75,9 @@ class TestFlatKwargs:
         assert c.network.block_urls == ["*ad*"]
 
     def test_emulation_fields(self):
-        c = ClientConfig.from_flat(locale="en-GB", timezone="Europe/London", geolocation=(51.5, -0.13))
+        c = ClientConfig.from_flat(
+            locale="en-GB", timezone="Europe/London", geolocation=(51.5, -0.13)
+        )
         assert c.emulation.locale == "en-GB"
         assert c.emulation.timezone == "Europe/London"
         assert c.emulation.geolocation == (51.5, -0.13)
@@ -98,21 +98,21 @@ class TestFlatKwargs:
 
 class TestValidation:
     def test_viewport_bounds(self):
-        with pytest.raises(Exception):  # pydantic ValidationError
+        with pytest.raises(pydantic.ValidationError):
             ViewportConfig(width=0)
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             ViewportConfig(width=-1)
 
     def test_extra_forbidden(self):
         """extra='forbid' catches typos."""
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             NetworkConfig(usr_agent="oops")  # typo
 
     def test_prefers_color_scheme_enum(self):
         EmulationConfig(prefers_color_scheme="dark")  # ok
         EmulationConfig(prefers_color_scheme="light")  # ok
         EmulationConfig(prefers_color_scheme=None)  # ok
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             EmulationConfig(prefers_color_scheme="sepia")
 
 

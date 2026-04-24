@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import blazeweb
+import pytest
 
 HTTPS_URL = "https://example.com"
 HTTP_URL = "http://example.com"

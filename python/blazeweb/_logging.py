@@ -1,40 +1,21 @@
-"""Logging configuration for blazeweb.
+"""Logging setup for blazeweb (Python + Rust).
 
-Both the Python side AND the Rust side emit structured log records at the
-standard levels: ``trace`` (Rust only) < ``debug`` < ``info`` < ``warn`` < ``error``.
-Python's stdlib ``logging`` module doesn't have a TRACE level — Rust's ``trace``
-calls map to our Python DEBUG when seen at the boundary, but in practice you
-see Rust trace directly on stderr, not through Python logging.
-
-Control:
-    - ``BLAZEWEB_LOG`` env var, read at module import time, sets BOTH sides.
-      Examples:
-         BLAZEWEB_LOG=debug
-         BLAZEWEB_LOG=trace                  # Rust + Python both max verbose
-         BLAZEWEB_LOG='blazeweb::engine=trace,blazeweb::pool=debug,warn'
-    - ``blazeweb.set_log_level("debug")`` — change at runtime (both sides).
-      Note: Rust's env_logger filter-string syntax (``module::target=level``)
-      can NOT be applied post-init via this function — it only sets a single
-      max_level. For per-target filters, use ``BLAZEWEB_LOG`` before import.
-
-Output format (both sides):
-    HH:MM:SS.mmm [LEVEL] target: message
-
-Rust and Python share stderr, so timestamps interleave correctly.
+Control via ``BLAZEWEB_LOG`` env var (read at module import) or
+``blazeweb.set_log_level(...)`` at runtime. Levels: ``trace``, ``debug``,
+``info``, ``warn``, ``error``, ``off``.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Union
 
-# The top-level blazeweb logger. All Python-side log calls live under this
-# hierarchy (``blazeweb.client``, ``blazeweb.config``, etc.).
 logger = logging.getLogger("blazeweb")
 
+# stdlib has no TRACE level — Rust trace prints via Rust logger; on the Python
+# side we bucket it to DEBUG so set_log_level("trace") is still meaningful.
 _LEVEL_MAP = {
-    "trace": logging.DEBUG,  # stdlib has no TRACE — map to DEBUG on the Python side
+    "trace": logging.DEBUG,
     "debug": logging.DEBUG,
     "info": logging.INFO,
     "warn": logging.WARNING,
@@ -44,27 +25,24 @@ _LEVEL_MAP = {
 }
 
 
-def _parse_level(level: Union[str, int]) -> int:
+def _parse_level(level: str | int) -> int:
     if isinstance(level, int):
         return level
+    # Accept env_logger-style filter strings ("blazeweb::engine=trace,warn") by
+    # taking the first token's level.
     first = level.split(",")[0].split("=")[-1].strip().lower()
     return _LEVEL_MAP.get(first, logging.WARNING)
 
 
-def configure(level: Union[str, int, None] = None) -> None:
-    """Configure blazeweb's Python-side logging.
+def configure(level: str | int | None = None) -> None:
+    """Set the Python-side ``blazeweb`` logger level.
 
-    Called automatically at module import with the BLAZEWEB_LOG env var value
-    (or "warn" if unset). Call again any time to change the level.
-
-    If the root ``logging`` config has no handlers yet, installs a sensible
-    default format with millisecond timestamps. If you've already configured
-    ``logging`` yourself, we only adjust the ``blazeweb`` logger's level.
+    Called on import with ``BLAZEWEB_LOG`` (or ``"warn"`` if unset). Installs
+    a default timestamped format only if no handlers are already configured.
     """
     if level is None:
         level = os.environ.get("BLAZEWEB_LOG", "warn")
     numeric = _parse_level(level)
-
     if not logging.getLogger().handlers:
         logging.basicConfig(
             format="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s",
@@ -74,18 +52,13 @@ def configure(level: Union[str, int, None] = None) -> None:
     logger.setLevel(numeric)
 
 
-def set_log_level(level: Union[str, int]) -> None:
-    """Set the log level on BOTH Python and Rust sides at once.
+def set_log_level(level: str | int) -> None:
+    """Set log level on BOTH Python and Rust sides.
 
-    Accepts ``"trace"`` / ``"debug"`` / ``"info"`` / ``"warn"`` / ``"error"`` /
-    ``"off"`` (case-insensitive) or a stdlib logging level int.
-
-    Rust's set_max_level only accepts a single level — if you've pre-configured
-    ``BLAZEWEB_LOG`` with per-module filters, calling this REPLACES that with a
-    single global level.
+    Rust's ``set_max_level`` takes a single level — if ``BLAZEWEB_LOG`` was
+    set with per-module filters at import, this replaces them with one global.
     """
     configure(level)
-    # Mirror on the Rust side.
     rust_level = level if isinstance(level, str) else {
         logging.DEBUG: "debug",
         logging.INFO: "info",

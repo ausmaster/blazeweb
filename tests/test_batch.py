@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import blazeweb
+import pytest
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 URLS = [
@@ -63,8 +62,7 @@ class TestBatchAcceptsIterables:
 
     def test_generator_works(self):
         def gen():
-            for u in URLS:
-                yield u
+            yield from URLS
         with blazeweb.Client() as c:
             results = c.batch(gen(), capture="html")
         assert len(results) == len(URLS)
