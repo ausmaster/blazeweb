@@ -1,145 +1,247 @@
-use crate::dom;
-use crate::error::EngineError;
-use crate::js;
-use crate::js::executor::JsPool;
-use crate::net::fetch::FetchContext;
-use crate::net::request::Request;
+//! Core navigate-and-capture step, running on a page drawn from the pool.
+//!
+//! Driven by `Client` via tokio. All async, all inside `py.allow_threads()`.
+//! One pooled page per fetch: configure (per-call overrides only), navigate,
+//! capture, reset on error. Pool pages keep their base config + console
+//! listeners across fetches.
 
-/// Render result containing HTML output and any JS errors encountered.
-pub struct RenderOutput {
-    pub html: String,
+use std::time::{Duration, Instant};
+
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
+use chromiumoxide::cdp::browser_protocol::page::{
+    CaptureScreenshotFormat, CaptureScreenshotParams, EventDomContentEventFired,
+    EventLoadEventFired,
+};
+use futures::StreamExt;
+
+use crate::config::{ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs, WaitUntil};
+use crate::error::{BlazeError, Result};
+use crate::pool::PageGuard;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    Html,
+    Png,
+    Both,
+}
+
+pub struct CaptureOutput {
+    pub html: Option<String>,
+    pub png: Option<Vec<u8>>,
     pub errors: Vec<String>,
+    pub final_url: String,
+    pub status_code: u16,
+    pub elapsed_s: f64,
 }
 
-/// Top-level render function: parse HTML → execute JS → serialize.
-///
-/// Creates a stateless FetchContext (no persistent cache or cookies).
-pub fn render(html: &[u8], base_url: Option<&str>) -> Result<RenderOutput, EngineError> {
-    let context = FetchContext::new(base_url);
-    render_with_context(html, base_url, &context)
-}
-
-/// Render with a caller-supplied FetchContext (e.g. from a Client with persistent cache).
-/// JS execution routes through the process-global default pool.
-pub fn render_with_context(
-    html: &[u8],
-    base_url: Option<&str>,
-    context: &FetchContext,
-) -> Result<RenderOutput, EngineError> {
-    render_inner(html, base_url, context, None)
-}
-
-/// Render using a caller-supplied JS executor pool (e.g. a Client's per-instance pool).
-pub fn render_with_pool(
-    html: &[u8],
-    base_url: Option<&str>,
-    context: &FetchContext,
-    pool: &JsPool,
-) -> Result<RenderOutput, EngineError> {
-    render_inner(html, base_url, context, Some(pool))
-}
-
-/// Fetch a URL and render it: fetch document → parse → execute JS → serialize.
-///
-/// Uses the final URL after redirects as the `base_url` for resource resolution.
-/// Creates a stateless FetchContext.
-pub fn fetch(url: &str) -> Result<RenderOutput, EngineError> {
-    let context = FetchContext::with_cookies_and_cache(Some(url));
-    fetch_with_context(url, &context)
-}
-
-/// Fetch a URL and render with a caller-supplied JS pool (Client's per-instance pool).
-pub fn fetch_with_pool(
+/// Navigate an already-configured pooled page to `url` and capture.
+pub async fn capture_page(
+    guard: &PageGuard,
     url: &str,
-    context: &FetchContext,
-    pool: &JsPool,
-) -> Result<RenderOutput, EngineError> {
-    fetch_inner(url, context, Some(pool))
-}
+    base: &ClientConfigRs,
+    per_call: &FetchConfigRs,
+    per_shot: &ScreenshotConfigRs,
+    mode: CaptureMode,
+) -> Result<CaptureOutput> {
+    let t0 = Instant::now();
+    log::debug!(target: "blazeweb::engine", "[{url}] capture_page mode={mode:?}");
 
-/// Fetch a URL and render with a caller-supplied FetchContext.
-/// JS execution routes through the process-global default pool.
-pub fn fetch_with_context(url: &str, context: &FetchContext) -> Result<RenderOutput, EngineError> {
-    fetch_inner(url, context, None)
-}
+    let timeout_ms = per_call
+        .timeout_ms
+        .or(per_shot.timeout_ms)
+        .unwrap_or(base.timeout.navigation_ms);
 
-fn fetch_inner(
-    url: &str,
-    context: &FetchContext,
-    pool: Option<&JsPool>,
-) -> Result<RenderOutput, EngineError> {
-    let parsed = url::Url::parse(url).map_err(|e| EngineError::Network {
-        url: url.into(),
-        reason: format!("invalid URL: {e}"),
-    })?;
-    let mut request = Request::document(parsed);
-    let response = crate::net::fetch::fetch(&mut request, context);
+    let page = guard.page();
 
-    if response.is_network_error() {
-        return Err(EngineError::Network {
-            url: url.into(),
-            reason: response.status_text,
-        });
+    let fut = async {
+        // Per-call viewport override (e.g. different size just for this screenshot).
+        if let Some((w, h)) = per_shot.viewport {
+            log::trace!(target: "blazeweb::engine", "[{url}] override viewport {w}x{h}");
+            page.execute(
+                SetDeviceMetricsOverrideParams::builder()
+                    .width(w as i64)
+                    .height(h as i64)
+                    .device_scale_factor(base.viewport.device_scale_factor)
+                    .mobile(base.viewport.mobile)
+                    .build()
+                    .map_err(|e| BlazeError::Cdp(format!("metrics: {e}")))?,
+            )
+            .await?;
+        }
+
+        // Per-call header merge — only if there ARE per-call / per-shot extras.
+        if !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty() {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] merging headers (per_call={}, per_shot={})",
+                per_call.extra_headers.len(),
+                per_shot.extra_headers.len()
+            );
+            let mut headers_map = base.network.extra_headers.clone();
+            for (k, v) in &per_call.extra_headers {
+                headers_map.insert(k.clone(), v.clone());
+            }
+            for (k, v) in &per_shot.extra_headers {
+                headers_map.insert(k.clone(), v.clone());
+            }
+            let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(
+                serde_json::to_value(&headers_map)
+                    .map_err(|e| BlazeError::Internal(e.to_string()))?,
+            );
+            page.execute(SetExtraHttpHeadersParams::new(headers)).await?;
+        }
+
+        // Subscribe BEFORE goto (race-free). goto returns on navigate ack
+        // (~5-10ms), well before any lifecycle event — DO NOT race it against
+        // these streams or the goto arm always wins.
+        let wait_until = per_call
+            .wait_until
+            .or(per_shot.wait_until)
+            .unwrap_or(base.wait_until);
+        let t_goto = Instant::now();
+        log::trace!(target: "blazeweb::engine", "[{url}] subscribe lifecycle streams");
+        let mut dcl_stream = page
+            .event_listener::<EventDomContentEventFired>()
+            .await
+            .map_err(BlazeError::from)?;
+        let mut load_stream = page
+            .event_listener::<EventLoadEventFired>()
+            .await
+            .map_err(BlazeError::from)?;
+
+        log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
+        page.goto(url).await?;
+        let t_nav_ack = t_goto.elapsed();
+        log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
+
+        match wait_until {
+            WaitUntil::DomContentLoaded => {
+                // DCL preferred; load covers tiny docs that never fire DCL.
+                tokio::select! {
+                    _ = dcl_stream.next() => {
+                        log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
+                    }
+                    _ = load_stream.next() => {
+                        log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
+                    }
+                }
+            }
+            WaitUntil::Load => {
+                load_stream.next().await;
+                log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+            }
+        }
+        log::trace!(
+            target: "blazeweb::engine",
+            "[{url}] nav done in {:?}",
+            t_goto.elapsed()
+        );
+
+        // Optional post-event settle — lets late async JS mutate the DOM on
+        // SPAs that render AFTER the chosen lifecycle event fires.
+        let wait_after_ms = per_call
+            .wait_after_ms
+            .or(per_shot.wait_after_ms)
+            .unwrap_or(base.wait_after_ms);
+        if wait_after_ms > 0 {
+            log::trace!(target: "blazeweb::engine", "[{url}] settle {wait_after_ms}ms");
+            tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
+        }
+
+        let final_url = page
+            .url()
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| url.to_string());
+        // Status from the pool's Network.responseReceived listener — captured
+        // on response headers, independent of wait_until choice.
+        let status_code: u16 = guard.main_status().unwrap_or(0);
+
+        let mut out = CaptureOutput {
+            html: None,
+            png: None,
+            errors: Vec::new(),
+            final_url,
+            status_code,
+            elapsed_s: 0.0,
+        };
+
+        if matches!(mode, CaptureMode::Html | CaptureMode::Both) {
+            let t_html = Instant::now();
+            let html = page.content().await?;
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] content: {} bytes in {:?}",
+                html.len(),
+                t_html.elapsed()
+            );
+            out.html = Some(html);
+        }
+
+        if matches!(mode, CaptureMode::Png | CaptureMode::Both) {
+            let cdp_format = match per_shot.format {
+                ImageFormat::Png => CaptureScreenshotFormat::Png,
+                ImageFormat::Jpeg => CaptureScreenshotFormat::Jpeg,
+                ImageFormat::Webp => CaptureScreenshotFormat::Webp,
+            };
+            let mut builder = CaptureScreenshotParams::builder()
+                .format(cdp_format)
+                .capture_beyond_viewport(per_shot.full_page);
+            if let Some(q) = per_shot.quality {
+                builder = builder.quality(q as i64);
+            }
+            let t_shot = Instant::now();
+            let bytes = page.screenshot(builder.build()).await?;
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] screenshot: {} bytes ({:?}, format={:?})",
+                bytes.len(),
+                t_shot.elapsed(),
+                per_shot.format
+            );
+            out.png = Some(bytes);
+        }
+
+        // Drain accumulated errors for this fetch.
+        out.errors = std::mem::take(&mut *guard.errors().lock());
+        if !out.errors.is_empty() {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] drained {} console errors",
+                out.errors.len()
+            );
+        }
+
+        Ok::<_, BlazeError>(out)
+    };
+
+    let fut_result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await;
+
+    // On error, reset the page so the next URL on this tab isn't poisoned by
+    // a half-loaded predecessor.
+    if matches!(&fut_result, Err(_) | Ok(Err(_))) {
+        log::debug!(target: "blazeweb::engine", "[{url}] error — reset to about:blank");
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            async { let _ = page.goto("about:blank").await; },
+        ).await;
     }
-    if !response.ok() {
-        return Err(EngineError::Network {
-            url: url.into(),
-            reason: format!("HTTP {}", response.status),
-        });
-    }
 
-    let final_url = response
-        .final_url()
-        .map(|u| u.as_str().to_owned())
-        .unwrap_or_else(|| url.to_string());
-    let html = response.text();
+    let mut result = fut_result
+        .map_err(|_| {
+            log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
+            BlazeError::NavigationTimeout(timeout_ms)
+        })??;
 
-    // Use the same context for the render (shares cache/cookies with the document fetch)
-    let mut ctx = context.clone();
-    ctx.base_url = Some(final_url.clone());
-    render_inner(html.as_bytes(), Some(&final_url), &ctx, pool)
-}
-
-fn render_inner(
-    html: &[u8],
-    base_url: Option<&str>,
-    context: &FetchContext,
-    pool: Option<&JsPool>,
-) -> Result<RenderOutput, EngineError> {
-    let t0 = std::time::Instant::now();
-    let url_label = base_url.unwrap_or("<inline>");
-
-    // Step 1: Parse HTML into Arena
-    let html_str = std::str::from_utf8(html)
-        .map_err(|e| EngineError::Parse(format!("invalid UTF-8: {e}")))?;
-    log::info!("[{}] parsing {} bytes of HTML", url_label, html.len());
-    let mut arena = dom::parse_document(html_str);
-    log::debug!("[{}] parsed in {:?}", url_label, t0.elapsed());
-
-    // Step 2: Execute scripts (skips V8 dispatch if no scripts found).
-    // Routes through the caller-supplied pool when present (Client's pool),
-    // otherwise the process-global default pool.
-    let js_errors = js::runtime::execute_scripts_via_pool(
-        &mut arena, base_url, context, pool,
-    )?;
-
-    // Step 3: Resolve CSS styles via Stylo (after scripts may have mutated DOM)
-    crate::css::resolve::resolve_styles(&mut arena);
-
-    // Step 4: Compute box layout via Taffy (positions + sizes for geometry APIs)
-    crate::css::layout::compute_layout(&mut arena);
-
-    // Step 5: Serialize back to HTML
-    let ser_start = std::time::Instant::now();
-    let output = dom::serialize(&arena);
-    log::debug!("[{}] serialized {} bytes in {:?}", url_label, output.len(), ser_start.elapsed());
-    log::info!(
-        "[{}] render complete in {:?} ({} JS errors, {} bytes output)",
-        url_label, t0.elapsed(), js_errors.len(), output.len(),
+    result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;
+    log::debug!(
+        target: "blazeweb::engine",
+        "[{url}] complete in {:.3}s (status={}, errors={})",
+        result.elapsed_s,
+        result.status_code,
+        result.errors.len()
     );
-
-    Ok(RenderOutput {
-        html: output,
-        errors: js_errors,
-    })
+    Ok(result)
 }

@@ -4,33 +4,57 @@ build-backend = "maturin"
 
 [project]
 name = "blazeweb"
-version = "0.1.0"
-description = "A Rust-powered HTML + JavaScript execution engine for Python"
-requires-python = ">=3.14"
-dependencies = []
+version = "2.0.0a0"
+description = "Fast URL → fully-rendered HTML + optional screenshot for Python, powered by Chromium via CDP"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-httpserver>=1.1",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
-conformance = [
+bench = [
     "pytest>=8",
     "playwright>=1.49",
-    "lxml>=5.0",
-    "cssselect>=1.2",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 [tool.maturin]
 python-source = "python"
 module-name = "blazeweb._blazeweb"
 features = ["pyo3/extension-module"]
+include = [
+    { path = "python/blazeweb/_binaries/**/*", format = "wheel" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["tests/html5lib-tests"]
 markers = [
-    "conformance: tests comparing blazeweb against headless Chromium",
+    "benchmark: performance regression tests",
     "real_sites: gauntlet tests against real production websites",
-    "benchmark: performance comparison blazeweb vs Chromium",
+    "threading: multi-thread / concurrency tests",
 ]

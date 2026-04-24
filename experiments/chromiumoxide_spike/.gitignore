@@ -1,0 +1,7 @@
+target/
+shots/
+shots_oxide/
+bench_out/
+bench_vs_playwright/
+
+!Cargo.lock
