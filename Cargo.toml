@@ -1,6 +1,6 @@
 [package]
 name = "blazeweb"
-version = "0.1.0"
+version = "2.0.0-alpha.0"
 edition = "2024"
 publish = false
 
@@ -10,48 +10,27 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 pyo3 = { version = "0.25", features = ["extension-module"] }
-v8 = "147"
-html5ever = "0.38"
-markup5ever = "0.38"
-slotmap = "1.0"
-wreq = { git = "https://github.com/penumbra-x/rquest.git", default-features = true, features = ["gzip", "brotli", "deflate"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
-selectors = "0.35"
-cssparser = "0.36"
-precomputed-hash = "0.1"
+
+# Chromium via CDP — the new engine
+chromiumoxide = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std"] }
+futures = "0.3"
+
+# Rust-side HTML query — backs RenderResult.dom
+scraper = "0.22"
+
+# Misc
+url = "2"
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
-deno_core_icudata = "=0.77.0"
-cookie = { version = "0.18", features = ["percent-encode"] }
-httpdate = "1"
-url = { version = "2", features = ["serde"] }
-data-url = "0.3"
-
-# Parley text layout + font metrics (same rev as Blitz for type compatibility)
-parley = { git = "https://github.com/linebender/parley", rev = "6d0d9c90a7875ceb34f0bb1c2bfbfbe5b5d74856", default-features = false, features = ["std", "system"] }
-skrifa = { version = "0.40", default-features = false, features = ["std"] }
-
-# Taffy layout engine (same rev as Blitz for type compatibility)
-taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "25759dad44d8350743a4e866fee54962f996895a", default-features = false, features = ["std", "flexbox", "grid", "block_layout", "content_size", "calc"] }
-stylo_atoms = { version = "0.12.0", package = "stylo_atoms" }
-
-# Stylo CSS engine + supporting crates
-style = { version = "0.12", package = "stylo", default-features = false, features = ["servo"] }
-style_traits = { version = "0.12", package = "stylo_traits", features = ["servo"] }
-style_dom = { version = "0.12", package = "stylo_dom" }
-style_config = { version = "0.12", package = "stylo_config" }
-servo_arc = "0.4"
-atomic_refcell = "0.1"
-euclid = "0.22"
-app_units = "0.7"
-string_cache = "0.9"
-web_atoms = "0.2"
-smallvec = "1"
-rayon = "1"
-
+once_cell = "1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level = 3
 lto = "thin"
+codegen-units = 1
 strip = "symbols"

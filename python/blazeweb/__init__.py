@@ -1,247 +1,409 @@
-"""blazeweb - A Rust-powered HTML + JavaScript execution engine."""
+"""blazeweb — URL → fully-rendered HTML (and/or screenshot) for Python.
+
+Powered by Chromium via CDP. Under the hood it's a Rust/tokio-driven
+chromiumoxide client speaking CDP directly to a bundled chrome-headless-shell.
+
+Typical usage::
+
+    import blazeweb
+
+    # One-shot (uses a shared, process-wide default Client)
+    html = blazeweb.fetch("https://example.com")
+    png  = blazeweb.screenshot("https://example.com")
+    both = blazeweb.fetch_all("https://example.com")
+
+    # Explicit Client for batch / tuning
+    with blazeweb.Client(concurrency=16) as client:
+        for result in client.batch(urls, capture="both"):
+            title = result.html.dom.title()
+            ...
+
+All HTML search (``.dom.query()``, ``.dom.find()``, etc.) runs in Rust for
+speed; no Python HTML parsing round-trip.
+"""
 
 from __future__ import annotations
 
-from blazeweb._blazeweb import Client as _Client
-from blazeweb._blazeweb import fetch as _fetch
-from blazeweb._blazeweb import render as _render
+import os
+import threading
+from typing import Any, Iterable, Literal
 
-__all__ = ["render", "fetch", "RenderResult", "Client"]
+from blazeweb._blazeweb import (
+    Client as _RustClient,
+    Dom as Dom,
+    Element as Element,
+    _FetchOutput,
+    _RenderOutput,
+)
+from blazeweb.config import (
+    ChromeConfig,
+    ClientConfig,
+    EmulationConfig,
+    FetchConfig,
+    NetworkConfig,
+    ScreenshotConfig,
+    TimeoutConfig,
+    ViewportConfig,
+)
+
+__all__ = [
+    # Module-level convenience
+    "fetch",
+    "screenshot",
+    "fetch_all",
+    # Classes
+    "Client",
+    "Dom",
+    "Element",
+    "FetchResult",
+    "RenderResult",
+    # Configs (re-exported from blazeweb.config)
+    "ClientConfig",
+    "FetchConfig",
+    "ScreenshotConfig",
+    "ViewportConfig",
+    "NetworkConfig",
+    "EmulationConfig",
+    "TimeoutConfig",
+    "ChromeConfig",
+]
+
+
+# Ensure the Rust side can locate the bundled chrome binary by pointing at this
+# package's installed directory.
+os.environ.setdefault(
+    "BLAZEWEB_PKG_DIR",
+    os.path.dirname(os.path.abspath(__file__)),
+)
+
+
+# ----------------------------------------------------------------------------
+# Result types
+# ----------------------------------------------------------------------------
 
 
 class RenderResult(str):
-    """Result of rendering HTML with JavaScript execution.
+    """Fully-rendered post-JS HTML. Subclasses ``str`` (lxml, regex, BS4 work).
 
-    Subclasses ``str`` so it works everywhere a string does (lxml, regex, etc.).
-    Additionally exposes ``.html`` and ``.errors`` attributes.
+    Adds:
+      - ``.errors`` — list[str] of console errors and load errors
+      - ``.final_url`` — URL after any redirects
+      - ``.status_code`` — final HTTP status
+      - ``.elapsed_s`` — end-to-end page-visit time (seconds)
+      - ``.dom`` — Rust-side HTML query (lazy; CSS selectors + BS4-like find)
     """
 
     errors: list[str]
+    final_url: str
+    status_code: int
+    elapsed_s: float
 
-    def __new__(cls, html: str, errors: list[str] | None = None) -> RenderResult:
+    def __new__(
+        cls,
+        html: str,
+        *,
+        errors: list[str] | None = None,
+        final_url: str = "",
+        status_code: int = 0,
+        elapsed_s: float = 0.0,
+        _raw: _RenderOutput | None = None,
+    ) -> RenderResult:
         instance = super().__new__(cls, html)
         instance.errors = errors or []
+        instance.final_url = final_url
+        instance.status_code = status_code
+        instance.elapsed_s = elapsed_s
+        instance._raw = _raw  # type: ignore[attr-defined]
+        instance._dom = None  # type: ignore[attr-defined]
         return instance
 
     @property
     def html(self) -> str:
         return str(self)
 
+    @property
+    def dom(self) -> Dom:
+        """Rust-parsed DOM (lazy). First access triggers html5ever parse."""
+        if self._dom is None:  # type: ignore[attr-defined]
+            raw = self._raw  # type: ignore[attr-defined]
+            if raw is None:
+                raise AttributeError(
+                    "this RenderResult was not produced by blazeweb; .dom unavailable"
+                )
+            object.__setattr__(self, "_dom", raw.make_dom())
+        return self._dom  # type: ignore[attr-defined]
+
     def __repr__(self) -> str:
-        trunc = str(self)[:60] + "..." if len(self) > 60 else str(self)
+        trunc = str(self)[:60] + "…" if len(self) > 60 else str(self)
+        parts = [f"html={trunc!r}"]
+        if self.final_url:
+            parts.append(f"final_url={self.final_url!r}")
         if self.errors:
-            return f"RenderResult(html='{trunc}', errors=[{len(self.errors)}])"
-        return f"RenderResult(html='{trunc}')"
+            parts.append(f"errors=[{len(self.errors)}]")
+        return f"RenderResult({', '.join(parts)})"
 
 
-def render(
-    html: bytes | str,
-    *,
-    base_url: str | None = None,
-) -> RenderResult:
-    """Render HTML, executing any inline and external JavaScript.
+class FetchResult:
+    """HTML + PNG from one page visit. Use when you want both."""
 
-    Args:
-        html: The HTML document to render. If str, encoded to UTF-8.
-        base_url: Base URL for resolving relative script src attributes.
+    __slots__ = ("html", "png", "_raw")
 
-    Returns:
-        RenderResult (str subclass) with `.html` and `.errors` attributes.
-    """
-    if isinstance(html, str):
-        html = html.encode("utf-8")
+    html: RenderResult
+    png: bytes
+    _raw: _FetchOutput
 
-    raw = _render(html, base_url=base_url)
-    return RenderResult(raw.html, raw.errors)
+    def __init__(self, raw: _FetchOutput) -> None:
+        self._raw = raw
+        # _FetchOutput has `.make_dom()` just like _RenderOutput — duck-typing
+        # lets RenderResult.dom use either raw object.
+        self.html = RenderResult(
+            raw.html,
+            errors=raw.errors,
+            final_url=raw.final_url,
+            status_code=raw.status_code,
+            elapsed_s=raw.elapsed_s,
+            _raw=raw,  # type: ignore[arg-type]
+        )
+        self.png = bytes(raw.png)
+
+    @property
+    def errors(self) -> list[str]:
+        return self._raw.errors
+
+    @property
+    def final_url(self) -> str:
+        return self._raw.final_url
+
+    @property
+    def status_code(self) -> int:
+        return self._raw.status_code
+
+    @property
+    def elapsed_s(self) -> float:
+        return self._raw.elapsed_s
+
+    def __repr__(self) -> str:
+        return (
+            f"FetchResult(html=<{len(self.html)} chars>, png=<{len(self.png)} bytes>, "
+            f"final_url={self.final_url!r}, elapsed_s={self.elapsed_s:.3f})"
+        )
 
 
-def fetch(url: str) -> RenderResult:
-    """Fetch a URL and render it with JavaScript execution.
+class _RenderOutputShim:
+    """Bridges FetchResult's raw into RenderResult.dom — both types have make_dom()."""
 
-    Fetches the HTML document at the given URL, then parses and executes
-    any JavaScript. The final URL after redirects is used as the base URL
-    for resolving relative resource paths.
+    def __init__(self, raw: _FetchOutput) -> None:
+        self._raw = raw
 
-    Args:
-        url: The URL to fetch and render.
+    def make_dom(self) -> Dom:
+        return self._raw.make_dom()
 
-    Returns:
-        RenderResult (str subclass) with ``.html`` and ``.errors`` attributes.
-    """
-    raw = _fetch(url)
-    return RenderResult(raw.html, raw.errors)
+
+# ----------------------------------------------------------------------------
+# Client
+# ----------------------------------------------------------------------------
 
 
 class Client:
-    """HTTP client with per-instance cache, cookies, and TLS configuration.
-
-    Each Client maintains its own HTTP cache, cookie jar, and optionally
-    a custom TLS configuration. Cache and TLS behavior are controllable
-    at the class level.
-
-    **Concurrency model:**
-    A single ``Client`` instance is safe to share across Python threads.
-    HTTP fetches run in parallel (tokio runtime). The V8 execution phase
-    serializes globally because V8's process-wide JSDispatchTable cannot
-    have multiple live isolates doing background work concurrently. For
-    JS-heavy pages this means JS execution effectively runs one render at
-    a time, but HTTP I/O still benefits from threading.
-
-    Args:
-        cache: Master cache toggle (default True).
-        cache_read: Whether to read from cache (default True).
-        cache_write: Whether to write to cache (default True).
-        timeout: Request timeout in seconds (default 10).
-        connect_timeout: Connection timeout in seconds (default 5).
-        max_connections_per_host: Max concurrent connections per host (default 6).
-        ech_grease: Enable ECH GREASE TLS extension (default True).
-        alps: Enable ALPS protocol negotiation (default True).
-        permute_extensions: Randomize TLS extension order (default True).
-        post_quantum: Enable X25519MLKEM768 post-quantum key exchange (default True).
-        js_workers: Number of dedicated V8 executor threads for this Client.
-            Each worker owns one long-lived V8 isolate. Defaults to
-            ``min(available_parallelism, 4)``. Construction blocks until all
-            workers' isolates are ready (~50-100 ms per worker).
-        js_timeout_ms: Per-render JavaScript execution timeout in milliseconds.
-            A render whose JS phase exceeds this is killed via
-            ``IsolateHandle::terminate_execution`` and the worker's isolate
-            self-recovers for the next render. Default 10 000.
+    """Long-lived chromium connection. Thread-safe — N Python threads may call
+    ``fetch()``/``screenshot()``/``batch()`` concurrently; an internal Semaphore
+    caps in-flight work at ``concurrency``.
     """
+
+    __slots__ = ("_rust", "_config")
 
     def __init__(
         self,
-        *,
-        cache: bool = True,
-        cache_read: bool = True,
-        cache_write: bool = True,
-        timeout: int | None = None,
-        connect_timeout: int | None = None,
-        max_connections_per_host: int | None = None,
-        ech_grease: bool | None = None,
-        alps: bool | None = None,
-        permute_extensions: bool | None = None,
-        post_quantum: bool | None = None,
-        js_workers: int | None = None,
-        js_timeout_ms: int | None = None,
+        *args: Any,
+        config: ClientConfig | None = None,
+        **kwargs: Any,
     ) -> None:
-        self._inner = _Client(
-            cache=cache,
-            cache_read=cache_read,
-            cache_write=cache_write,
-            timeout=timeout,
-            connect_timeout=connect_timeout,
-            max_connections_per_host=max_connections_per_host,
-            ech_grease=ech_grease,
-            alps=alps,
-            permute_extensions=permute_extensions,
-            post_quantum=post_quantum,
-            js_workers=js_workers,
-            js_timeout_ms=js_timeout_ms,
-        )
+        if args:
+            raise TypeError(
+                "Client() takes only keyword args. Pass config=ClientConfig(...) "
+                "or flat kwargs like Client(viewport=(w,h), concurrency=N, ...)."
+            )
+        if config is not None and kwargs:
+            raise TypeError("pass either config=... or flat kwargs, not both")
 
-    def render(
-        self,
-        html: bytes | str,
-        *,
-        base_url: str | None = None,
-        cache: bool | None = None,
-        cache_read: bool | None = None,
-        cache_write: bool | None = None,
-    ) -> RenderResult:
-        """Render HTML with JavaScript execution, using the script cache.
+        if config is None:
+            config = ClientConfig.from_flat(**kwargs) if kwargs else ClientConfig()
 
-        Per-render kwargs override class-level settings.
-        ``cache=False`` disables both read and write for this call.
+        self._config = config
+        self._rust = _RustClient(config.model_dump())
 
-        Args:
-            html: The HTML document to render. If str, encoded to UTF-8.
-            base_url: Base URL for resolving relative script src attributes.
-            cache: Override master cache toggle for this call.
-            cache_read: Override cache read for this call.
-            cache_write: Override cache write for this call.
-
-        Returns:
-            RenderResult (str subclass) with `.html` and `.errors` attributes.
-        """
-        if isinstance(html, str):
-            html = html.encode("utf-8")
-
-        kwargs: dict = {"base_url": base_url}
-        if cache is not None:
-            kwargs["cache"] = cache
-        if cache_read is not None:
-            kwargs["cache_read"] = cache_read
-        if cache_write is not None:
-            kwargs["cache_write"] = cache_write
-
-        raw = self._inner.render(html, **kwargs)
-        return RenderResult(raw.html, raw.errors)
+    # --- Primary API -------------------------------------------------------
 
     def fetch(
         self,
         url: str,
         *,
-        cache: bool | None = None,
-        cache_read: bool | None = None,
-        cache_write: bool | None = None,
+        config: FetchConfig | None = None,
+        **overrides: Any,
     ) -> RenderResult:
-        """Fetch a URL and render it, using the script cache.
+        """Fetch URL, return fully-rendered HTML post-JS."""
+        fc = _merge_fetch_config(config, overrides)
+        raw = self._rust.fetch(url, fc.model_dump())
+        return RenderResult(
+            raw.html,
+            errors=raw.errors,
+            final_url=raw.final_url,
+            status_code=raw.status_code,
+            elapsed_s=raw.elapsed_s,
+            _raw=raw,
+        )
 
-        Per-fetch kwargs override class-level settings.
-        ``cache=False`` disables both read and write for this call.
+    def screenshot(
+        self,
+        url: str,
+        *,
+        config: ScreenshotConfig | None = None,
+        **overrides: Any,
+    ) -> bytes:
+        """Fetch URL, return PNG screenshot."""
+        if config is None and not overrides:
+            sc = ScreenshotConfig()
+        elif config is not None and not overrides:
+            sc = config
+        else:
+            data = config.model_dump() if config else {}
+            for k, v in overrides.items():
+                if k not in {"viewport", "full_page", "timeout_ms", "extra_headers"}:
+                    raise TypeError(f"unknown screenshot kwarg: {k!r}")
+                data[k] = v
+            sc = ScreenshotConfig.model_validate(data)
+        return bytes(self._rust.screenshot(url, sc.model_dump()))
 
-        Args:
-            url: The URL to fetch and render.
-            cache: Override master cache toggle for this call.
-            cache_read: Override cache read for this call.
-            cache_write: Override cache write for this call.
+    def fetch_all(
+        self,
+        url: str,
+        *,
+        config: FetchConfig | None = None,
+        full_page: bool = False,
+        **overrides: Any,
+    ) -> FetchResult:
+        """Fetch URL, return both HTML and PNG from one page visit."""
+        fc = _merge_fetch_config(config, overrides)
+        sc = ScreenshotConfig(full_page=full_page)
+        raw = self._rust.fetch_all(url, fc.model_dump(), sc.model_dump())
+        return FetchResult(raw)
 
-        Returns:
-            RenderResult (str subclass) with ``.html`` and ``.errors`` attributes.
+    def batch(
+        self,
+        urls: Iterable[str],
+        *,
+        capture: Literal["html", "png", "both"] = "html",
+        config: FetchConfig | None = None,
+    ) -> list[RenderResult | FetchResult | bytes]:
+        """Run a batch of URLs in parallel (tokio-driven). Returns when all complete.
+
+        Return type depends on ``capture``:
+          - "html" → list[RenderResult]
+          - "png" → list[bytes]
+          - "both" → list[FetchResult]
         """
-        kwargs: dict = {}
-        if cache is not None:
-            kwargs["cache"] = cache
-        if cache_read is not None:
-            kwargs["cache_read"] = cache_read
-        if cache_write is not None:
-            kwargs["cache_write"] = cache_write
+        fc = config or FetchConfig()
+        raws = self._rust.batch(list(urls), capture, fc.model_dump())
+        if capture == "html":
+            return [
+                RenderResult(
+                    r.html,
+                    errors=r.errors,
+                    final_url=r.final_url,
+                    status_code=r.status_code,
+                    elapsed_s=r.elapsed_s,
+                    _raw=r,
+                )
+                for r in raws
+            ]
+        if capture == "png":
+            return [bytes(b) for b in raws]
+        return [FetchResult(r) for r in raws]
 
-        raw = self._inner.fetch(url, **kwargs)
-        return RenderResult(raw.html, raw.errors)
+    # --- Private / experimental -------------------------------------------
 
-    def clear_cache(self) -> None:
-        """Flush all cached scripts."""
-        self._inner.clear_cache()
+    def _render(
+        self,
+        html: bytes | str,
+        *,
+        base_url: str | None = None,
+        config: FetchConfig | None = None,
+    ) -> RenderResult:
+        """NOT public. Inject raw HTML into chromium via data: URL.
 
-    @property
-    def cache_size(self) -> int:
-        """Number of scripts currently cached."""
-        return self._inner.cache_size
+        Niche: most users want ``.fetch(url)``. This is kept because it's cheap
+        to implement (data: URL) and might be useful for unit tests.
+        """
+        if isinstance(html, str):
+            html = html.encode("utf-8")
+        import base64 as _b64
 
-    @property
-    def cache(self) -> bool:
-        """Master cache toggle."""
-        return self._inner.cache
+        data_url = "data:text/html;base64," + _b64.b64encode(html).decode("ascii")
+        # TODO: respect base_url — requires document.write or <base>. For v1 we ignore.
+        del base_url
+        return self.fetch(data_url, config=config)
 
-    @cache.setter
-    def cache(self, value: bool) -> None:
-        self._inner.cache = value
+    # --- Lifecycle ---------------------------------------------------------
 
-    @property
-    def cache_read(self) -> bool:
-        """Cache read toggle."""
-        return self._inner.cache_read
+    def close(self) -> None:
+        self._rust.close()
 
-    @cache_read.setter
-    def cache_read(self, value: bool) -> None:
-        self._inner.cache_read = value
+    def __enter__(self) -> Client:
+        return self
 
-    @property
-    def cache_write(self) -> bool:
-        """Cache write toggle."""
-        return self._inner.cache_write
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
-    @cache_write.setter
-    def cache_write(self, value: bool) -> None:
-        self._inner.cache_write = value
+
+# ----------------------------------------------------------------------------
+# Module-level convenience (shared default Client, lazy-init, thread-safe)
+# ----------------------------------------------------------------------------
+
+_default_client: Client | None = None
+_default_client_lock = threading.Lock()
+
+
+def _get_default_client() -> Client:
+    global _default_client
+    if _default_client is None:
+        with _default_client_lock:
+            if _default_client is None:
+                _default_client = Client()
+    return _default_client
+
+
+def fetch(url: str, *, config: FetchConfig | None = None, **overrides: Any) -> RenderResult:
+    """Fetch URL → fully-rendered HTML. Uses a shared default Client."""
+    return _get_default_client().fetch(url, config=config, **overrides)
+
+
+def screenshot(
+    url: str, *, config: ScreenshotConfig | None = None, **overrides: Any
+) -> bytes:
+    """Fetch URL → PNG bytes. Uses a shared default Client."""
+    return _get_default_client().screenshot(url, config=config, **overrides)
+
+
+def fetch_all(
+    url: str, *, config: FetchConfig | None = None, full_page: bool = False, **overrides: Any
+) -> FetchResult:
+    """Fetch URL → HTML + PNG. Uses a shared default Client."""
+    return _get_default_client().fetch_all(
+        url, config=config, full_page=full_page, **overrides
+    )
+
+
+# ----------------------------------------------------------------------------
+# Helpers — _merge_fetch_config is used by fetch() and fetch_all(), keep it.
+# ----------------------------------------------------------------------------
+
+
+def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> FetchConfig:
+    if base is None and not overrides:
+        return FetchConfig()
+    data: dict[str, Any] = base.model_dump() if base else {}
+    for k, v in overrides.items():
+        if k not in {"extra_headers", "timeout_ms"}:
+            raise TypeError(f"unknown fetch kwarg: {k!r}")
+        data[k] = v
+    return FetchConfig.model_validate(data)

@@ -27,5 +27,9 @@ dist/
 # Ruff
 .ruff_cache/
 
+# Dev-only — CLAUDE.md is local notes
 CLAUDE.md
-specs/
+
+# Bundled chromium binaries — populated at wheel build time (scripts/download-chrome.py).
+# Not committed to git (too large); maturin `include` picks them up from disk.
+python/blazeweb/_binaries/
