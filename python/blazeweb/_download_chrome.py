@@ -143,13 +143,50 @@ def download_for(
         tmp_path.unlink(missing_ok=True)
 
 
-def main() -> int:
-    default_dest = Path(__file__).resolve().parent / "_binaries"
+def default_dest_dir() -> Path:
+    """Where install_chrome writes by default — next to this module inside
+    the installed package, i.e. ``<site-packages>/blazeweb/_binaries/``."""
+    return Path(__file__).resolve().parent / "_binaries"
 
+
+def install_chrome(
+    *,
+    dest: Path | None = None,
+    force: bool = False,
+    platform_key: str | None = None,
+    all_platforms: bool = False,
+) -> int:
+    """Fetch chrome-headless-shell. Returns a CLI-style exit code (0 = success).
+
+    Shared by the ``blazeweb-download-chrome`` console-script entry point and
+    the ``blazeweb --install`` CLI flag — kept callable (no argparse) so both
+    can invoke it without fighting over ``sys.argv``.
+    """
+    dest = (dest or default_dest_dir()).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    if platform_key:
+        targets = [platform_key]
+    elif all_platforms:
+        targets = [p[0] for p in PLATFORMS]
+    else:
+        targets = [current_platform_key()]
+
+    print(f"Chrome version: {CHROME_VERSION}")
+    print(f"Destination:    {dest}")
+    print(f"Platforms:      {targets}")
+    for t in targets:
+        download_for(t, dest_root=dest, force=force)
+
+    print("done.")
+    return 0
+
+
+def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--dest", default=str(default_dest),
-        help="Destination dir (default: python/blazeweb/_binaries)",
+        "--dest", default=None,
+        help="Destination dir (default: <installed package>/_binaries)",
     )
     p.add_argument(
         "--all", action="store_true",
@@ -165,24 +202,12 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    dest = Path(args.dest).resolve()
-    dest.mkdir(parents=True, exist_ok=True)
-
-    if args.platform:
-        targets = [args.platform]
-    elif args.all:
-        targets = [p[0] for p in PLATFORMS]
-    else:
-        targets = [current_platform_key()]
-
-    print(f"Chrome version: {CHROME_VERSION}")
-    print(f"Destination:    {dest}")
-    print(f"Platforms:      {targets}")
-    for t in targets:
-        download_for(t, dest_root=dest, force=args.force)
-
-    print("done.")
-    return 0
+    return install_chrome(
+        dest=Path(args.dest) if args.dest else None,
+        force=args.force,
+        platform_key=args.platform,
+        all_platforms=args.all,
+    )
 
 
 if __name__ == "__main__":

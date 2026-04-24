@@ -72,11 +72,16 @@ pub fn resolve(explicit: Option<&str>) -> Result<PathBuf> {
         }
     }
 
-    Err(BlazeError::ChromeNotFound(
-        "no chrome binary found in arg/env/bundled/system/PATH. \
-         Pass chrome_path=, set BLAZEWEB_CHROME__PATH, or install chromium."
-            .to_string(),
-    ))
+    Err(BlazeError::ChromeNotFound(format!(
+        "chrome-headless-shell not found for platform {plat}. Fix by either:\n\
+         \x20 - running `blazeweb --install` (or `blazeweb-download-chrome`) to \
+         fetch the pinned chrome-headless-shell into the installed package, or\n\
+         \x20 - installing a system chromium (`chromium`, `chromium-browser`, \
+         `chrome`, or `google-chrome` on PATH), or\n\
+         \x20 - pointing blazeweb at an existing binary with \
+         `Client(chrome_path=...)` or `BLAZEWEB_CHROME__PATH=...`.",
+        plat = platform_subdir(),
+    )))
 }
 
 /// Look for `_binaries/<platform>/<binary>` under the installed package dir

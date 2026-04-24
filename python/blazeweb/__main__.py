@@ -42,6 +42,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("url", nargs="?", help="URL to fetch")
     p.add_argument("--version", action="store_true", help="print version and exit")
+    p.add_argument(
+        "--install", action="store_true",
+        help=(
+            "one-time setup: download chrome-headless-shell for this platform "
+            "into the installed package. Run once after `uv tool install "
+            "blazeweb` / `pipx install blazeweb` / `pip install blazeweb`. "
+            "For --force, --all, --platform, use `blazeweb-download-chrome`."
+        ),
+    )
 
     out = p.add_argument_group("output")
     out.add_argument(
@@ -243,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             print("unknown")
         return 0
+
+    if args.install:
+        from blazeweb._download_chrome import install_chrome
+        return install_chrome()
 
     if args.preset == "list":
         _list_presets()

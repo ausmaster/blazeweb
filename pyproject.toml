@@ -60,9 +60,9 @@ warn_required_dynamic_aliases = true
 python-source = "python"
 module-name = "blazeweb._blazeweb"
 features = ["pyo3/extension-module"]
-include = [
-    { path = "python/blazeweb/_binaries/**/*", format = "wheel" },
-]
+# Chrome-headless-shell (~179 MB per platform) is NOT bundled into the wheel.
+# Wheels stay small; end users fetch the pinned binary with `blazeweb --install`
+# after install — mirrors Playwright's `playwright install` pattern.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

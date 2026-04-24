@@ -39,49 +39,27 @@ python -m blazeweb https://example.com --json            # JSON w/ metadata
 
 ## Install
 
-With [uv](https://docs.astral.sh/uv/) (recommended):
+Two steps — mirrors Playwright's pattern (small wheel + one-time browser fetch).
 
 ```bash
+# CLI
+uv tool install blazeweb
+blazeweb --install             # fetch chrome-headless-shell (~180 MB, one-time)
+blazeweb https://example.com
+
+# Library
 uv add blazeweb
+uv run blazeweb --install
 ```
 
-Or pip:
+`pipx install blazeweb` and `pip install blazeweb` work the same way.
 
-```bash
-pip install blazeweb
-```
+Chromium resolution order: `chrome_path=` / `BLAZEWEB_CHROME__PATH`
+→ `--install`-fetched binary → system `chromium` / `chrome` on PATH. If
+you already have a system chromium, skip `--install`.
 
-The wheel ships chrome-headless-shell 148 bundled inside — no extra
-`playwright install` step, no system chromium required.
-
-### Platforms without a pre-built wheel
-
-When your platform doesn't have a matching wheel on PyPI, pip/uv falls
-back to a source build. You'll need a stable Rust toolchain
-([rustup](https://rustup.rs) is the easy path); maturin takes over from
-there and compiles the native extension as part of the install.
-
-```bash
-# Triggers the source build on install — Rust compiles
-# blazeweb._blazeweb as part of the step.
-uv add blazeweb
-```
-
-Source installs don't include the bundled Chromium (that only ships
-inside wheels). Fetch it once after install:
-
-```bash
-uv run blazeweb-download-chrome      # ~100 MB, one-time
-```
-
-Or, if you'd rather not bundle, install a system Chromium
-(`chromium`, `chromium-browser`, `chrome`, or `google-chrome` on PATH).
-blazeweb auto-resolves in order:
-
-1. Explicit `chrome_path=` passed to `Client(...)`.
-2. Bundled binary in `python/blazeweb/_binaries/<platform>/`
-   (populated by `blazeweb-download-chrome`).
-3. The first system binary found on PATH.
+Platforms without a PyPI wheel trigger a source build ([rustup](https://rustup.rs)
+needed); `--install` works the same after.
 
 ## Why blazeweb
 
