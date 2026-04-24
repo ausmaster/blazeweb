@@ -31,8 +31,19 @@ class TestFetchTopLevel:
     def test_fetch_has_metadata(self):
         result = blazeweb.fetch(HTTPS_URL)
         assert result.final_url.startswith("https://example.com")
-        assert result.status_code > 0
+        assert result.status_code == 200  # real status from main-doc response
         assert result.elapsed_s > 0
+
+    def test_fetch_404_returns_404_status(self):
+        """We capture the main-doc response status, not 200-on-any-navigation."""
+        result = blazeweb.fetch("https://httpbin.org/status/404")
+        assert result.status_code == 404
+
+    def test_fetch_redirect_status_is_final(self):
+        """http → https redirect: status reflects the final resource, not the 301."""
+        result = blazeweb.fetch("http://httpbin.org/redirect-to?url=https://example.com")
+        assert result.final_url == "https://example.com/"
+        assert result.status_code == 200
 
     def test_fetch_html_property(self):
         result = blazeweb.fetch(HTTPS_URL)
