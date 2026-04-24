@@ -23,15 +23,11 @@ use crate::pool::PagePool;
 use crate::result::{RawFetchOutput, RawRenderOutput};
 use crate::runtime;
 
-/// Opaque wrapper for the chromium Browser + the page pool + its handler task.
-///
-/// `config` is wrapped in RwLock so runtime updates (see `Client::update_config`)
-/// can swap it atomically without blocking in-flight fetches for long —
-/// readers clone out at fetch start; the writer briefly takes exclusive access.
+/// Chromium Browser + page pool + handler task. `config` is RwLock-wrapped so
+/// `update_config` can swap atomically without blocking in-flight fetches.
 struct ClientState {
     runtime: Arc<tokio::runtime::Runtime>,
-    /// Held so the browser process stays alive while the pool exists;
-    /// accessed indirectly through pooled pages, not directly by name.
+    /// Keeps the browser process alive while the pool exists.
     #[allow(dead_code)]
     browser: Arc<Browser>,
     pool: Arc<PagePool>,
@@ -74,11 +70,8 @@ impl Client {
 
         let runtime = runtime::shared();
 
-        // Build Chrome CLI args from config. The curated perf flags below are
-        // the "Puppeteer/Playwright headless speedup" set — they strip background
-        // services, translation, extensions, sync, phishing detection, etc.,
-        // which chromium otherwise spins up by default even in --headless=new.
-        // Measurable effect on per-tab CPU + startup time.
+        // Chrome CLI: the curated Puppeteer/Playwright-style headless speedup
+        // flags strip background services, translation, extensions, sync, etc.
         let mut builder = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .arg("--headless=new")
@@ -392,8 +385,7 @@ impl Client {
                     }
                 },
                 Err(e) => {
-                    // Per-URL failure: return a stub result with the error captured.
-                    // One slow / bad URL must not kill an otherwise healthy batch.
+                    // Per-URL failure → stub result so one bad URL doesn't kill the batch.
                     log::warn!("batch item failed: {e}");
                     match mode {
                         CaptureMode::Html => {

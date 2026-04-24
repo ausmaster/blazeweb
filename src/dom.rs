@@ -39,7 +39,14 @@ impl Dom {
                 return f(h);
             }
         }
+        let t0 = std::time::Instant::now();
         let parsed = Html::parse_document(&self.html);
+        log::trace!(
+            target: "blazeweb::dom",
+            "parsed {} bytes in {:?}",
+            self.html.len(),
+            t0.elapsed()
+        );
         let r = f(&parsed);
         *self.parsed.borrow_mut() = Some(parsed);
         r

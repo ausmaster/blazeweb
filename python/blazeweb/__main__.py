@@ -1,35 +1,15 @@
-"""Command-line interface.
+"""CLI entry point — see ``python -m blazeweb --help`` for the full flag list.
 
   python -m blazeweb <URL>                              # HTML → stdout
-  python -m blazeweb <URL> -o page.html                 # HTML → file, stdout suppressed
-  python -m blazeweb <URL> -s shot.png                  # HTML → stdout, screenshot → file
-  python -m blazeweb <URL> -o page.html -s shot.jpg     # HTML → file, screenshot → file
-  python -m blazeweb <URL> --screenshot-only shot.webp  # image-only, HTML suppressed
-  python -m blazeweb <URL> --json                       # single-line JSON → stdout (all metadata)
+  python -m blazeweb <URL> -o page.html                 # HTML → file
+  python -m blazeweb <URL> -s shot.png                  # HTML → stdout, PNG → file
+  python -m blazeweb <URL> --screenshot-only shot.webp  # image-only, HTML silenced
+  python -m blazeweb <URL> --json                       # single-line JSON with metadata
 
-Image format is inferred from the output file extension (``.jpg`` / ``.jpeg``
- → jpeg, ``.webp`` → webp, anything else → png). Override with ``--format``.
-Quality (0-100) applies to jpeg / webp only.
+Image format inferred from output extension (``.jpg`` / ``.jpeg`` → jpeg,
+``.webp`` → webp, else png). Override with ``--format`` / ``--quality``.
 
-Common knobs (all optional):
-  --user-agent STR        # override default UA
-  --width N --height N    # viewport (default 1200×800)
-  --timeout-ms MS         # per-URL navigation cap (default 30000)
-  --locale LOCALE         # e.g. en-US, ja-JP
-  --timezone TZ           # e.g. America/New_York
-  --proxy URL             # http:// or socks5://
-  --header KEY=VALUE      # extra HTTP headers (repeatable)
-  --headers-file FILE     # newline-separated KEY=VALUE headers
-  --no-js                 # disable JS execution (compare with requests/httpx)
-  --ignore-certs          # --ignore-certificate-errors
-  --chrome PATH           # override bundled Chrome binary
-  --format FMT            # png|jpeg|webp (default: inferred from extension)
-  --quality N             # 0-100 for jpeg/webp
-  --full-page             # full scrollable height for screenshot
-  --version               # print blazeweb version and exit
-
-Exit codes:
-  0 success, 1 bad arg, 2 fetch error (with message on stderr)
+Exit codes: 0 = success, 1 = bad arg, 2 = fetch error.
 """
 
 from __future__ import annotations
@@ -38,6 +18,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Literal, cast
 
 import blazeweb
 
@@ -211,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     shot_path = args.screenshot or args.screenshot_only
     img_format = _infer_format(shot_path, args.format)
 
-    # HTML destination: file (--output PATH), stdout ('-' or unset), or suppressed (--screenshot-only)
+    # HTML destination: file (-o PATH) / stdout ('-' or unset) / suppressed (--screenshot-only).
     html_to_file: Path | None = None
     html_to_stdout = True
     if args.screenshot_only:
@@ -231,47 +212,48 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with blazeweb.Client(**client_kwargs) as client:
             if want_shot:
-                result = client.fetch_all(
+                # img_format has been validated by _infer_format to be one of the
+                # three accepted literals, but static-typing doesn't know that.
+                shot_result = client.fetch_all(
                     args.url,
                     full_page=args.full_page,
-                    format=img_format,
+                    format=cast(Literal["png", "jpeg", "webp"], img_format),
                     quality=args.quality,
                 )
-                Path(shot_path).write_bytes(result.png)
-                html_result = result.html
+                Path(shot_path).write_bytes(shot_result.png)
                 if args.json:
                     out = {
                         "url": args.url,
-                        "final_url": result.final_url,
-                        "status_code": result.status_code,
-                        "elapsed_s": result.elapsed_s,
-                        "errors": result.errors,
-                        "html": str(result.html),
+                        "final_url": shot_result.final_url,
+                        "status_code": shot_result.status_code,
+                        "elapsed_s": shot_result.elapsed_s,
+                        "errors": shot_result.errors,
+                        "html": str(shot_result.html),
                         "image_path": str(Path(shot_path).resolve()),
                         "image_format": img_format,
-                        "image_bytes": len(result.png),
+                        "image_bytes": len(shot_result.png),
                     }
                     sys.stdout.write(json.dumps(out) + "\n")
                 else:
-                    _emit_html(str(result.html))
+                    _emit_html(str(shot_result.html))
+                if args.meta and not args.json:
+                    _emit_meta(shot_result.html)
             else:
-                result = client.fetch(args.url)
-                html_result = result
+                html_only = client.fetch(args.url)
                 if args.json:
                     out = {
                         "url": args.url,
-                        "final_url": result.final_url,
-                        "status_code": result.status_code,
-                        "elapsed_s": result.elapsed_s,
-                        "errors": result.errors,
-                        "html": str(result),
+                        "final_url": html_only.final_url,
+                        "status_code": html_only.status_code,
+                        "elapsed_s": html_only.elapsed_s,
+                        "errors": html_only.errors,
+                        "html": str(html_only),
                     }
                     sys.stdout.write(json.dumps(out) + "\n")
                 else:
-                    _emit_html(str(result))
-
-            if args.meta and not args.json:
-                _emit_meta(html_result)
+                    _emit_html(str(html_only))
+                if args.meta and not args.json:
+                    _emit_meta(html_only)
 
     except RuntimeError as e:
         sys.stderr.write(f"blazeweb: {e}\n")

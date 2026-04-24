@@ -1,11 +1,6 @@
-//! Pre-warmed pool of chromium Pages — the core perf optimization.
-//!
-//! Creating a new CDP target per URL costs ~50-150ms of handler-task time
-//! (new_page + SetDeviceMetrics + event-listener subscription). When driving
-//! hundreds of URLs, that tax dominates throughput. Instead we pre-create
-//! `concurrency` pages at Client launch, apply base config + register console
-//! listeners once, then each fetch just navigates an existing page and returns
-//! it to the pool — no per-URL setup, no per-URL close.
+//! Pre-warmed pool of chromium pages — pre-created at Client launch with base
+//! config + listeners applied once. Each fetch navigates an existing page and
+//! returns it to the pool, avoiding the ~50-150ms per-URL new_page tax.
 
 use std::sync::Arc;
 
@@ -25,20 +20,17 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::config::ClientConfigRs;
 use crate::error::{BlazeError, Result};
 
-/// One pooled page + its persistent per-page console-error collector and
-/// main-document status tracker.
+/// One pooled page + its persistent console-error and main-doc-status collectors.
 pub struct PooledPage {
     pub page: Page,
     pub errors: Arc<Mutex<Vec<String>>>,
-    /// Status of the most recent main-doc response. Filled by a Network.responseReceived
-    /// listener — fires as soon as response headers arrive, BEFORE DOMContentLoaded.
-    /// Needed because `wait_for_navigation_response()` can block until load event.
+    /// Latest main-doc HTTP status from Network.responseReceived — populated on
+    /// response headers, well before DOMContentLoaded.
     pub main_status: Arc<Mutex<Option<u16>>>,
 }
 
-/// A pre-warmed set of Pages, sized to the Client's concurrency. `acquire()`
-/// hands out (page, semaphore permit) together — capping in-flight pages at
-/// pool size is baked in, no separate rate-limit needed upstream.
+/// Pool sized to the Client's `concurrency`. `acquire()` returns page + permit
+/// together; excess callers queue on the semaphore.
 pub struct PagePool {
     pages: Mutex<Vec<PooledPage>>,
     sem: Arc<Semaphore>,
@@ -132,8 +124,7 @@ impl PageGuard {
         self.page.as_ref().expect("guard drained").errors.clone()
     }
 
-    /// The status code of the most-recent main-document response (filled by
-    /// our Network.responseReceived listener). None if no response arrived yet.
+    /// Latest main-doc response status. None if no response has arrived yet.
     pub fn main_status(&self) -> Option<u16> {
         *self.page.as_ref().expect("guard drained").main_status.lock()
     }
@@ -147,21 +138,16 @@ impl Drop for PageGuard {
     }
 }
 
-/// Create ONE page, apply every base-config CDP knob, wire up console /
-/// exception listeners into a per-page error Vec.
+/// Create one page, apply base config, wire up persistent listeners.
 async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<PooledPage> {
     let t0 = std::time::Instant::now();
     let page = browser
         .new_page("about:blank")
         .await
         .map_err(BlazeError::from)?;
-    log::trace!(
-        target: "blazeweb::pool",
-        "new_page(about:blank) in {:?}",
-        t0.elapsed()
-    );
+    log::trace!(target: "blazeweb::pool", "new_page in {:?}", t0.elapsed());
 
-    // Viewport — always apply (Chrome's default without this is 800×600).
+    // Chrome's viewport defaults to 800×600 without an explicit override.
     page.execute(
         SetDeviceMetricsOverrideParams::builder()
             .width(base.viewport.width as i64)
@@ -197,8 +183,7 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             "Network.setBlockedURLs ({} patterns)",
             base.network.block_urls.len()
         );
-        // Each user pattern becomes a BlockPattern with block=true. URLPattern
-        // syntax — e.g. `*://*:*/*.css` — not to be confused with legacy glob.
+        // URLPattern syntax (`*://*.doubleclick.net/*`), not legacy glob.
         let patterns: Vec<BlockPattern> = base
             .network
             .block_urls
@@ -267,7 +252,7 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             .await?;
     }
 
-    // --- Persistent per-page error + main-doc-status collectors ---
+    // Persistent per-page listeners: console errors + main-doc HTTP status.
     let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
     {
@@ -311,10 +296,9 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             }
         });
 
-        // Main-doc status via responseReceived. Fires as soon as response
-        // headers arrive — before DCL, load, or anything else. We keep
-        // overwriting on each Document-type response so redirects end up
-        // with the final status.
+        // Overwrite on every Document response so redirects end with the
+        // final status. Fires before DCL/load, much earlier than
+        // wait_for_navigation_response would.
         let status_cl = main_status.clone();
         let mut resp_stream = page
             .event_listener::<EventResponseReceived>()

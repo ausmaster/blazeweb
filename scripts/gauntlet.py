@@ -86,7 +86,9 @@ def compare_capture_modes(urls: list[str], concurrency: int, nav_timeout_ms: int
     banner(f"capture-mode comparison at concurrency={concurrency}")
     print(f"  {'mode':>6}  {'URL/s':>7}  {'ok':>7}  {'elapsed':>7}")
     for mode in ("html", "png", "both"):
-        with blazeweb.Client(concurrency=concurrency, navigation_timeout_ms=nav_timeout_ms) as client:
+        with blazeweb.Client(
+            concurrency=concurrency, navigation_timeout_ms=nav_timeout_ms
+        ) as client:
             t0 = time.perf_counter()
             results = client.batch(urls, capture=mode)
             elapsed = time.perf_counter() - t0
@@ -100,7 +102,9 @@ def python_threads_drive(
 ) -> None:
     """Prove the GIL-release model: N Python threads drive ONE Client, in parallel."""
     banner(f"Python-thread drive — {threads} threads × Client(concurrency={concurrency})")
-    with blazeweb.Client(concurrency=concurrency, navigation_timeout_ms=nav_timeout_ms) as client:
+    with blazeweb.Client(
+        concurrency=concurrency, navigation_timeout_ms=nav_timeout_ms
+    ) as client:
         latencies: list[float] = []
         errors = 0
 
@@ -126,10 +130,13 @@ def python_threads_drive(
     print(f"  {rate:.2f} URL/s   {len(urls) - errors}/{len(urls)} ok   {elapsed:.2f}s")
     if latencies:
         s = sorted(latencies)
-        pick = lambda q: s[min(int(len(s) * q), len(s) - 1)]
+
+        def pctile(q: float) -> float:
+            return s[min(int(len(s) * q), len(s) - 1)]
+
         print(
             f"  per-URL latency: p50={statistics.median(s):.2f}s  "
-            f"p95={pick(0.95):.2f}s  p99={pick(0.99):.2f}s"
+            f"p95={pctile(0.95):.2f}s  p99={pctile(0.99):.2f}s"
         )
 
 
@@ -182,7 +189,7 @@ def prewarm_and_filter(urls: list[str], nav_timeout_ms: int) -> list[str]:
             results = client.batch(uniq, capture="html")
             elapsed = time.perf_counter() - t
             bad = set()
-            for url, r in zip(uniq, results):
+            for url, r in zip(uniq, results, strict=True):
                 if classify(r) != "ok":
                     bad.add(url)
             survivors -= bad

@@ -26,16 +26,26 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Iterable, Literal
+from collections.abc import Iterable
+from typing import Any, Literal
+
+from pydantic import BaseModel as _BaseModel
 
 from blazeweb._blazeweb import (
     Client as _RustClient,
+)
+from blazeweb._blazeweb import (
     Dom as Dom,
+)
+from blazeweb._blazeweb import (
     Element as Element,
+)
+from blazeweb._blazeweb import (
     _FetchOutput,
     _RenderOutput,
 )
-from blazeweb._logging import configure as _configure_logging, logger, set_log_level
+from blazeweb._logging import configure as _configure_logging
+from blazeweb._logging import logger, set_log_level
 from blazeweb.config import (
     ChromeConfig,
     ClientConfig,
@@ -172,7 +182,7 @@ class FetchResult:
             final_url=raw.final_url,
             status_code=raw.status_code,
             elapsed_s=raw.elapsed_s,
-            _raw=raw,  # type: ignore[arg-type]
+            _raw=raw,
         )
         self.png = bytes(raw.png)
 
@@ -230,9 +240,9 @@ _LAUNCH_ONLY_FIELDS: tuple[tuple[str, ...], ...] = (
 
 
 class Client:
-    """Long-lived chromium connection. Thread-safe — N Python threads may call
-    ``fetch()``/``screenshot()``/``batch()`` concurrently; an internal Semaphore
-    caps in-flight work at ``concurrency``.
+    """Long-lived chromium connection backed by a pre-warmed page pool.
+    Thread-safe — N Python threads may call ``fetch()``/``screenshot()``/
+    ``batch()`` concurrently, capped by ``concurrency``.
     """
 
     __slots__ = ("_rust", "_config")
@@ -267,23 +277,9 @@ class Client:
 
     @property
     def config(self) -> _ConfigView:
-        """Live-mutable config view.
-
-        Read attributes normally (``client.config.network.user_agent``).
-        Assignments at any depth push through to the Rust engine::
-
-            client.config.network.user_agent = "Bot/2.0"        # takes effect next fetch
-            client.config.emulation.locale = "ja-JP"
-            client.config.viewport.width = 1920
-
-        Launch-only fields raise ``ValueError`` at assignment time — you see
-        the error at the exact line you wrote, not later::
-
-            client.config.concurrency = 32              # ValueError immediately
-            client.config.chrome.args = ["--flag"]      # ValueError immediately
-
-        To get a plain ``ClientConfig`` (detached deep-copy, safe to mutate
-        without side effects), call ``client.config.snapshot()``.
+        """Live-mutable config view. ``client.config.network.user_agent = "X"``
+        at any depth auto-syncs to Rust. Launch-only fields raise ``ValueError``
+        at the assignment line. Call ``.snapshot()`` for a detached deep-copy.
         """
         return _ConfigView(self, ())
 
@@ -293,19 +289,10 @@ class Client:
         config: ClientConfig | None = None,
         **kwargs: Any,
     ) -> None:
-        """Swap in new runtime-mutable config fields; takes effect on next call.
-
-        Accepts either a full ``config=ClientConfig(...)`` OR flat kwargs which
-        merge onto the current config (``client.update_config(user_agent="...",
-        locale="ja-JP")``).
-
-        Raises ``ValueError`` if any launch-only field has changed — those live
-        in the Chrome process and can't be flipped after launch. Recreate the
-        Client for that. See :data:`_LAUNCH_ONLY_FIELDS` for the list.
-
-        Thread-safety: atomic swap. In-flight ``fetch()``/``screenshot()`` calls
-        snapshot config at the start, so they won't see a torn state. Batches
-        snapshot once at dispatch — mid-batch updates don't re-apply.
+        """Swap in new config (takes effect on next fetch). Pass either
+        ``config=ClientConfig(...)`` OR flat kwargs. In-flight calls snapshot
+        at start so won't see a torn state. Raises ``ValueError`` on any
+        launch-only field change (see ``_LAUNCH_ONLY_FIELDS``).
         """
         if args:
             raise TypeError("update_config() takes only keyword args")
@@ -425,6 +412,7 @@ class Client:
         url_list = list(urls)
         _client_log.info("batch: %d URLs, capture=%s", len(url_list), capture)
         raws = self._rust.batch(url_list, capture, fc.model_dump())
+        results: list[RenderResult | FetchResult | bytes]
         if capture == "html":
             results = [
                 RenderResult(
@@ -530,7 +518,7 @@ def fetch_all(
 
 
 # ----------------------------------------------------------------------------
-# Helpers — _merge_fetch_config is used by fetch() and fetch_all(), keep it.
+# Helpers
 # ----------------------------------------------------------------------------
 
 
@@ -561,16 +549,11 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
 # Live-mutable config view — returned by Client.config
 # ----------------------------------------------------------------------------
 
-from pydantic import BaseModel as _BaseModel  # local alias for isinstance checks
-
 
 class _ConfigView:
-    """Live proxy over a Client's config. Reads from the Client's pydantic
-    model; writes route through ``Client._apply_config`` so Rust stays in sync.
-
-    Only ``_ConfigView`` and ``_client``/``_path`` attrs live on instances —
-    everything else is delegated to the underlying pydantic model. See
-    ``Client.config`` for the intended use.
+    """Live proxy over a Client's config — reads delegate to the pydantic
+    model; writes route through ``Client._apply_config`` to keep Rust in sync.
+    Only ``_client`` / ``_path`` live on instances (``__slots__``).
     """
 
     __slots__ = ("_client", "_path")
@@ -600,16 +583,14 @@ class _ConfigView:
         if name.startswith("_"):
             object.__setattr__(self, name, value)
             return
-        # Build a sparse partial dict representing just THIS change:
-        #   path=("network",), name="user_agent", value="Bot/2.0"
-        #   → {"network": {"user_agent": "Bot/2.0"}}
+        # Build a sparse partial dict for THIS change:
+        #   path=("network",), name="user_agent" → {"network": {"user_agent": value}}
         partial: dict[str, Any] = {}
         cur = partial
         for p in self._path:
             cur[p] = {}
             cur = cur[p]
         cur[name] = value
-
         merged = _deep_merge(self._client._config.model_dump(), partial)  # noqa: SLF001
         new_cfg = ClientConfig.model_validate(merged)
         self._client._apply_config(new_cfg)  # noqa: SLF001
@@ -618,26 +599,18 @@ class _ConfigView:
         return f"<live config view of {self._target()!r}>"
 
     def snapshot(self) -> ClientConfig | Any:
-        """Detached deep copy — mutating this does NOT affect the client.
-
-        Top-level returns ``ClientConfig``; sub-views return the respective
-        sub-config type (e.g. ``NetworkConfig``).
-        """
+        """Detached deep-copy. Sub-views return their sub-config type."""
         return self._target().model_copy(deep=True)
 
     def model_dump(self, **kw: Any) -> dict[str, Any]:
-        """Forwarded — ``client.config.model_dump()`` Just Works."""
         return self._target().model_dump(**kw)
 
     def model_dump_json(self, **kw: Any) -> str:
-        """Forwarded — ``client.config.model_dump_json()`` Just Works."""
         return self._target().model_dump_json(**kw)
 
 
-# --- update_config helpers (shared between Client.__init__ kwargs and update_config) ---
-
-# Same mapping as ClientConfig.from_flat's internal flat_map, duplicated here
-# because we want a SPARSE partial-dict (no defaults), not a full ClientConfig.
+# update_config / Client(**kwargs) build a SPARSE partial dict (unlike
+# ClientConfig.from_flat, which fills defaults) — kept as a separate table.
 _FLAT_KWARG_MAP: dict[str, tuple[str, ...]] = {
     # Viewport
     "device_scale_factor": ("viewport", "device_scale_factor"),
