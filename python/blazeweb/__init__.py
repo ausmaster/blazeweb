@@ -204,6 +204,21 @@ class _RenderOutputShim:
 # ----------------------------------------------------------------------------
 
 
+#: Dotted paths into ClientConfig that can only be set at Client creation.
+#: Attempting to change any of these via ``client.update_config(...)`` raises
+#: ``ValueError`` — you must construct a new Client.
+_LAUNCH_ONLY_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("concurrency",),              # Semaphore sized once at launch
+    ("chrome", "path"),            # Chrome binary is already exec'd
+    ("chrome", "args"),            # Chrome CLI flags fixed at launch
+    ("chrome", "user_data_dir"),   # Chrome user-data-dir is per-process
+    ("chrome", "headless"),        # ditto
+    ("network", "proxy"),          # --proxy-server is a CLI flag
+    ("network", "ignore_https_errors"),  # --ignore-certificate-errors is a CLI flag
+    ("timeout", "launch_ms"),      # only meaningful before Chrome is up
+)
+
+
 class Client:
     """Long-lived chromium connection. Thread-safe — N Python threads may call
     ``fetch()``/``screenshot()``/``batch()`` concurrently; an internal Semaphore
@@ -231,6 +246,67 @@ class Client:
 
         self._config = config
         self._rust = _RustClient(config.model_dump())
+
+    # --- Config introspection + runtime update ---------------------------
+
+    @property
+    def config(self) -> ClientConfig:
+        """Snapshot of the Client's current config.
+
+        Returns a **deep copy** — mutating the returned object does NOT affect
+        the live client. To change settings, use :meth:`update_config`.
+        """
+        return self._config.model_copy(deep=True)
+
+    def update_config(
+        self,
+        *args: Any,
+        config: ClientConfig | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Swap in new runtime-mutable config fields; takes effect on next call.
+
+        Accepts either a full ``config=ClientConfig(...)`` OR flat kwargs which
+        merge onto the current config (``client.update_config(user_agent="...",
+        locale="ja-JP")``).
+
+        Raises ``ValueError`` if any launch-only field has changed — those
+        live in the Chrome process and can't be flipped after launch. Recreate
+        the Client for that. See :data:`_LAUNCH_ONLY_FIELDS` for the list.
+
+        Thread-safety: atomic swap. In-flight ``fetch()``/``screenshot()`` calls
+        snapshot config at the start, so they won't see a torn state. Batches
+        snapshot once at dispatch — mid-batch updates don't re-apply.
+        """
+        if args:
+            raise TypeError("update_config() takes only keyword args")
+        if config is not None and kwargs:
+            raise TypeError("pass either config= OR flat kwargs, not both")
+
+        if config is not None:
+            new_config = config
+        elif kwargs:
+            # Build a sparse partial from kwargs and merge on top of current.
+            partial = _flat_kwargs_to_partial(kwargs)
+            merged = _deep_merge(self._config.model_dump(), partial)
+            new_config = ClientConfig.model_validate(merged)
+        else:
+            return  # no-op
+
+        # Guard: reject launch-only field changes.
+        old_data = self._config.model_dump()
+        new_data = new_config.model_dump()
+        for path in _LAUNCH_ONLY_FIELDS:
+            if _get_nested(old_data, path) != _get_nested(new_data, path):
+                raise ValueError(
+                    f"cannot change launch-only field {'.'.join(path)!r} at runtime "
+                    f"(was {_get_nested(old_data, path)!r}, "
+                    f"requested {_get_nested(new_data, path)!r}). "
+                    f"Create a new Client to change this setting."
+                )
+
+        self._rust.update_config(new_data)
+        self._config = new_config
 
     # --- Primary API -------------------------------------------------------
 
@@ -407,3 +483,90 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
             raise TypeError(f"unknown fetch kwarg: {k!r}")
         data[k] = v
     return FetchConfig.model_validate(data)
+
+
+# --- update_config helpers (shared between Client.__init__ kwargs and update_config) ---
+
+# Same mapping as ClientConfig.from_flat's internal flat_map, duplicated here
+# because we want a SPARSE partial-dict (no defaults), not a full ClientConfig.
+_FLAT_KWARG_MAP: dict[str, tuple[str, ...]] = {
+    # Viewport
+    "device_scale_factor": ("viewport", "device_scale_factor"),
+    "mobile": ("viewport", "mobile"),
+    # Network
+    "user_agent": ("network", "user_agent"),
+    "proxy": ("network", "proxy"),
+    "extra_headers": ("network", "extra_headers"),
+    "ignore_https_errors": ("network", "ignore_https_errors"),
+    "block_urls": ("network", "block_urls"),
+    "disable_cache": ("network", "disable_cache"),
+    "offline": ("network", "offline"),
+    "latency_ms": ("network", "latency_ms"),
+    "download_bps": ("network", "download_bps"),
+    "upload_bps": ("network", "upload_bps"),
+    # Emulation
+    "locale": ("emulation", "locale"),
+    "timezone": ("emulation", "timezone"),
+    "geolocation": ("emulation", "geolocation"),
+    "prefers_color_scheme": ("emulation", "prefers_color_scheme"),
+    "javascript_enabled": ("emulation", "javascript_enabled"),
+    # Timeout
+    "navigation_timeout_ms": ("timeout", "navigation_ms"),
+    "launch_timeout_ms": ("timeout", "launch_ms"),
+    "screenshot_timeout_ms": ("timeout", "screenshot_ms"),
+    # Chrome
+    "chrome_path": ("chrome", "path"),
+    "chrome_args": ("chrome", "args"),
+    "user_data_dir": ("chrome", "user_data_dir"),
+    "headless": ("chrome", "headless"),
+}
+
+
+def _flat_kwargs_to_partial(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Translate flat kwargs into a sparse nested dict. Only mentioned fields
+    appear in the output; defaults are NOT filled in. Meant for merging onto
+    an existing config."""
+    out: dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if k == "viewport":
+            if isinstance(v, tuple) and len(v) == 2:
+                out.setdefault("viewport", {})
+                out["viewport"]["width"] = int(v[0])
+                out["viewport"]["height"] = int(v[1])
+            elif isinstance(v, ViewportConfig):
+                out["viewport"] = v.model_dump()
+            else:
+                raise TypeError(
+                    f"viewport must be (w,h) or ViewportConfig, got {type(v).__name__}"
+                )
+            continue
+        if k == "concurrency":
+            out["concurrency"] = v
+            continue
+        if k not in _FLAT_KWARG_MAP:
+            raise TypeError(f"unknown ClientConfig kwarg: {k!r}")
+        sub, field = _FLAT_KWARG_MAP[k]
+        out.setdefault(sub, {})
+        out[sub][field] = v
+    return out
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge `overlay` into `base`. `overlay` wins where both have a key."""
+    out = dict(base)
+    for k, v in overlay.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _get_nested(data: dict[str, Any], path: tuple[str, ...]) -> Any:
+    """Walk a dotted path into a nested dict. Returns None if any step is missing."""
+    cur: Any = data
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
