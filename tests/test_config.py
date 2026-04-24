@@ -12,7 +12,10 @@ from blazeweb import (
     FetchConfig,
     NetworkConfig,
     ScreenshotConfig,
+    ScriptsConfig,
     TimeoutConfig,
+    UserAgentBrandVersion,
+    UserAgentMetadata,
     ViewportConfig,
 )
 
@@ -173,6 +176,138 @@ class TestPerCallConfigs:
         sc = ScreenshotConfig()
         assert sc.viewport is None
         assert sc.full_page is False
+
+
+class TestUserAgentMetadata:
+    """Sec-CH-UA metadata paired with the plain UA string."""
+
+    def test_default_none(self):
+        assert NetworkConfig().user_agent_metadata is None
+
+    def test_construct_minimal(self):
+        m = UserAgentMetadata(
+            platform="Linux",
+            platform_version="",
+            architecture="x86",
+            model="",
+            mobile=False,
+        )
+        assert m.platform == "Linux"
+        assert m.mobile is False
+        assert m.brands is None  # optional
+        assert m.wow64 is False  # default
+
+    def test_construct_full(self):
+        m = UserAgentMetadata(
+            brands=[
+                UserAgentBrandVersion(brand="Google Chrome", version="131"),
+                UserAgentBrandVersion(brand="Chromium", version="131"),
+            ],
+            platform="Linux",
+            platform_version="",
+            architecture="x86",
+            model="",
+            mobile=False,
+            bitness="64",
+        )
+        assert len(m.brands) == 2
+        assert m.brands[0].brand == "Google Chrome"
+        assert m.bitness == "64"
+
+    def test_required_fields_enforced(self):
+        with pytest.raises(pydantic.ValidationError):
+            UserAgentMetadata()  # missing platform/platform_version/etc.
+
+    def test_extra_forbidden(self):
+        with pytest.raises(pydantic.ValidationError):
+            UserAgentMetadata(
+                platform="Linux",
+                platform_version="",
+                architecture="x86",
+                model="",
+                mobile=False,
+                nonsense="x",
+            )
+
+    def test_dict_input_coerces_to_submodel(self):
+        nc = NetworkConfig(
+            user_agent="X",
+            user_agent_metadata={
+                "brands": [{"brand": "Google Chrome", "version": "131"}],
+                "platform": "Linux",
+                "platform_version": "",
+                "architecture": "x86",
+                "model": "",
+                "mobile": False,
+            },
+        )
+        assert isinstance(nc.user_agent_metadata, UserAgentMetadata)
+        assert nc.user_agent_metadata.brands[0].brand == "Google Chrome"
+
+    def test_flat_kwarg_routes_to_network(self):
+        c = ClientConfig.from_flat(
+            user_agent="UA",
+            user_agent_metadata={
+                "platform": "Linux",
+                "platform_version": "",
+                "architecture": "x86",
+                "model": "",
+                "mobile": False,
+            },
+        )
+        assert c.network.user_agent == "UA"
+        assert c.network.user_agent_metadata is not None
+        assert c.network.user_agent_metadata.platform == "Linux"
+
+
+class TestScriptsConfig:
+    """Declarative JS injection — top-level ScriptsConfig section."""
+
+    def test_defaults_empty(self):
+        c = ClientConfig()
+        assert c.scripts.on_new_document == []
+        assert c.scripts.on_dom_content_loaded == []
+        assert c.scripts.on_load == []
+        assert c.scripts.isolated_world == []
+        assert c.scripts.url_scoped == {}
+
+    def test_construct_nested_dict(self):
+        c = ClientConfig(
+            scripts={
+                "on_new_document": ["console.log(1)"],
+                "isolated_world": ["console.log(2)"],
+                "url_scoped": {"example.com": ["console.log(3)"]},
+            }
+        )
+        assert c.scripts.on_new_document == ["console.log(1)"]
+        assert c.scripts.isolated_world == ["console.log(2)"]
+        assert c.scripts.url_scoped == {"example.com": ["console.log(3)"]}
+
+    def test_construct_submodel(self):
+        c = ClientConfig(
+            scripts=ScriptsConfig(on_new_document=["var x=1;"]),
+        )
+        assert isinstance(c.scripts, ScriptsConfig)
+        assert c.scripts.on_new_document == ["var x=1;"]
+
+    def test_extra_forbidden(self):
+        with pytest.raises(pydantic.ValidationError):
+            ScriptsConfig(on_navigation=["oops"])  # typo / not a supported key
+
+    def test_flat_kwarg(self):
+        c = ClientConfig.from_flat(
+            scripts={"on_new_document": ["x;"], "on_load": ["y;"]},
+        )
+        assert c.scripts.on_new_document == ["x;"]
+        assert c.scripts.on_load == ["y;"]
+
+    def test_env_var_loads_json_list(self, monkeypatch):
+        """Pydantic-settings JSON-parses list[str] env vars."""
+        monkeypatch.setenv(
+            "BLAZEWEB_SCRIPTS__ON_NEW_DOCUMENT", '["console.log(1)"]'
+        )
+        c = ClientConfig()
+        assert c.scripts.on_new_document == ["console.log(1)"]
 
 
 class TestClientConstructors:

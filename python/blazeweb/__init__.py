@@ -53,7 +53,10 @@ from blazeweb.config import (
     FetchConfig,
     NetworkConfig,
     ScreenshotConfig,
+    ScriptsConfig,
     TimeoutConfig,
+    UserAgentBrandVersion,
+    UserAgentMetadata,
     ViewportConfig,
 )
 
@@ -78,11 +81,14 @@ __all__ = [
     "ClientConfig",
     "FetchConfig",
     "ScreenshotConfig",
+    "ScriptsConfig",
     "ViewportConfig",
     "NetworkConfig",
     "EmulationConfig",
     "TimeoutConfig",
     "ChromeConfig",
+    "UserAgentBrandVersion",
+    "UserAgentMetadata",
     # Logging
     "logger",
     "set_log_level",
@@ -617,6 +623,7 @@ _FLAT_KWARG_MAP: dict[str, tuple[str, ...]] = {
     "mobile": ("viewport", "mobile"),
     # Network
     "user_agent": ("network", "user_agent"),
+    "user_agent_metadata": ("network", "user_agent_metadata"),
     "proxy": ("network", "proxy"),
     "extra_headers": ("network", "extra_headers"),
     "ignore_https_errors": ("network", "ignore_https_errors"),
@@ -660,6 +667,16 @@ def _flat_kwargs_to_partial(kwargs: dict[str, Any]) -> dict[str, Any]:
             else:
                 raise TypeError(
                     f"viewport must be (w,h) or ViewportConfig, got {type(v).__name__}"
+                )
+            continue
+        if k == "scripts":
+            if isinstance(v, ScriptsConfig):
+                out["scripts"] = v.model_dump()
+            elif isinstance(v, dict):
+                out["scripts"] = dict(v)
+            else:
+                raise TypeError(
+                    f"scripts must be dict or ScriptsConfig, got {type(v).__name__}"
                 )
             continue
         if k == "concurrency":

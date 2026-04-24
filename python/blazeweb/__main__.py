@@ -66,10 +66,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     cfg = p.add_argument_group("config")
+    cfg.add_argument(
+        "--preset", metavar="NAME",
+        help=(
+            "apply a preset bundle in 'module.NAME' form (e.g. stealth.BASIC, "
+            "stealth.FINGERPRINT, recon.FAST, archival.FULL_PAGE). Explicit "
+            "flags below override preset fields. Use '--preset list' to print "
+            "all known presets and exit."
+        ),
+    )
     cfg.add_argument("--user-agent", "-A", help="override User-Agent")
-    cfg.add_argument("--width", type=int, default=1200)
-    cfg.add_argument("--height", type=int, default=800)
-    cfg.add_argument("--timeout-ms", type=int, default=30000, help="per-URL navigation cap")
+    cfg.add_argument("--width", type=int, default=None, help="viewport width (default: 1200)")
+    cfg.add_argument("--height", type=int, default=None, help="viewport height (default: 800)")
+    cfg.add_argument(
+        "--timeout-ms", type=int, default=None,
+        help="per-URL navigation cap (default: 30000)",
+    )
     cfg.add_argument("--locale", help="e.g. en-US, ja-JP")
     cfg.add_argument("--timezone", help="e.g. America/New_York")
     cfg.add_argument("--proxy", help="e.g. http://host:8080 or socks5://host:1080")
@@ -126,11 +138,65 @@ def _read_headers_file(path: Path) -> dict[str, str]:
     return out
 
 
+def _resolve_preset(name: str) -> dict:
+    """Look up a preset by dotted name (e.g., ``stealth.BASIC``)."""
+    from blazeweb import presets
+
+    if "." not in name:
+        raise ValueError(
+            f"--preset must be in 'module.NAME' form (e.g. 'stealth.BASIC'), "
+            f"got {name!r}. Try --preset list."
+        )
+    module_name, _, const_name = name.partition(".")
+    mod = getattr(presets, module_name, None)
+    if mod is None:
+        raise ValueError(
+            f"unknown preset module {module_name!r}. "
+            f"Try --preset list for available presets."
+        )
+    preset = getattr(mod, const_name, None)
+    if not isinstance(preset, dict):
+        raise ValueError(
+            f"unknown preset {name!r}. Try --preset list."
+        )
+    return preset
+
+
+def _list_presets(stream=sys.stdout) -> None:
+    """Print available presets (every uppercase ``dict`` attribute across
+    the submodules under ``blazeweb.presets``)."""
+    from blazeweb import presets
+
+    stream.write("Available presets (use --preset <module>.<NAME>):\n")
+    for module_name in sorted(vars(presets)):
+        if module_name.startswith("_"):
+            continue
+        mod = getattr(presets, module_name)
+        if not hasattr(mod, "__all__"):
+            continue
+        for attr in sorted(dir(mod)):
+            if attr.startswith("_") or not attr.isupper():
+                continue
+            val = getattr(mod, attr)
+            if isinstance(val, dict):
+                stream.write(f"  {module_name}.{attr}\n")
+
+
 def _build_client_kwargs(args: argparse.Namespace) -> dict:
-    kwargs: dict = {
-        "viewport": (args.width, args.height),
-        "navigation_timeout_ms": args.timeout_ms,
-    }
+    # Start with the preset (if any) so explicit CLI flags can override below.
+    kwargs: dict = dict(_resolve_preset(args.preset)) if args.preset else {}
+
+    # Overlay explicit CLI flags. Sentinel-None semantics on the overlapping
+    # flags (viewport, timeout) so preset values flow through unchanged when
+    # the user didn't pass the flag.
+    if args.width is not None or args.height is not None:
+        # If only one dimension is given, fall back to the Client default
+        # (1200x800) for the other.
+        w = args.width if args.width is not None else 1200
+        h = args.height if args.height is not None else 800
+        kwargs["viewport"] = (w, h)
+    if args.timeout_ms is not None:
+        kwargs["navigation_timeout_ms"] = args.timeout_ms
     if args.user_agent:
         kwargs["user_agent"] = args.user_agent
     if args.locale:
@@ -146,7 +212,8 @@ def _build_client_kwargs(args: argparse.Namespace) -> dict:
     if args.chrome:
         kwargs["chrome_path"] = args.chrome
 
-    headers: dict[str, str] = {}
+    # Headers: merge preset → file → -H flags (last writer wins per key).
+    headers: dict[str, str] = dict(kwargs.get("extra_headers") or {})
     if args.headers_file:
         headers.update(_read_headers_file(Path(args.headers_file)))
     for k, v in args.header:
@@ -177,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
             print("unknown")
         return 0
 
+    if args.preset == "list":
+        _list_presets()
+        return 0
+
     if not args.url:
         p.error("URL is required (see --help)")
 
@@ -187,7 +258,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.quality is not None and not 0 <= args.quality <= 100:
         p.error("--quality must be between 0 and 100")
 
-    client_kwargs = _build_client_kwargs(args)
+    try:
+        client_kwargs = _build_client_kwargs(args)
+    except ValueError as e:
+        p.error(str(e))
     want_shot = bool(args.screenshot or args.screenshot_only)
     shot_path = args.screenshot or args.screenshot_only
     img_format = _infer_format(shot_path, args.format)

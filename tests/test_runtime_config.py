@@ -34,6 +34,29 @@ class TestLiveSetattr:
             c.config.network.user_agent = "updated"
             assert c.config.concurrency == 4  # unchanged
 
+    def test_scripts_on_new_document_setattr(self):
+        """Live-assigning scripts writes through to Rust.
+
+        NOTE: Per docs, this only affects *future* pool pages. Existing pooled
+        pages keep their original registrations. We verify the config round-trip
+        here; a functional test that the scripts actually fire on a new page
+        lives in test_stealth.py.
+        """
+        with blazeweb.Client() as c:
+            c.config.scripts.on_new_document = ["console.log('x')"]
+            assert c.config.scripts.on_new_document == ["console.log('x')"]
+
+    def test_user_agent_metadata_setattr(self):
+        with blazeweb.Client() as c:
+            c.config.network.user_agent_metadata = {
+                "platform": "Linux",
+                "platform_version": "",
+                "architecture": "x86",
+                "model": "",
+                "mobile": False,
+            }
+            assert c.config.network.user_agent_metadata.platform == "Linux"
+
 
 class TestLaunchOnlyRejection:
     """Launch-only fields raise immediately at the offending setattr."""

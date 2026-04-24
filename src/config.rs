@@ -47,6 +47,7 @@ pub struct ClientConfigRs {
     pub viewport: ViewportRs,
     pub network: NetworkRs,
     pub emulation: EmulationRs,
+    pub scripts: ScriptsRs,
     pub timeout: TimeoutRs,
     pub chrome: ChromeRs,
 }
@@ -62,6 +63,7 @@ pub struct ViewportRs {
 #[derive(Debug, Clone, Default)]
 pub struct NetworkRs {
     pub user_agent: Option<String>,
+    pub user_agent_metadata: Option<UserAgentMetadataRs>,
     pub proxy: Option<String>,
     pub extra_headers: HashMap<String, String>,
     pub ignore_https_errors: bool,
@@ -71,6 +73,43 @@ pub struct NetworkRs {
     pub latency_ms: Option<f64>,
     pub download_bps: Option<u64>,
     pub upload_bps: Option<u64>,
+}
+
+/// One entry in ``Sec-CH-UA``. Mirrors CDP's ``Emulation.UserAgentBrandVersion``.
+#[derive(Debug, Clone)]
+pub struct UserAgentBrandVersionRs {
+    pub brand: String,
+    pub version: String,
+}
+
+/// Structured client-hint metadata. Mirrors CDP's ``Emulation.UserAgentMetadata``
+/// and feeds ``Network.setUserAgentOverride``'s ``userAgentMetadata`` field.
+#[derive(Debug, Clone)]
+pub struct UserAgentMetadataRs {
+    pub brands: Option<Vec<UserAgentBrandVersionRs>>,
+    pub full_version_list: Option<Vec<UserAgentBrandVersionRs>>,
+    pub platform: String,
+    pub platform_version: String,
+    pub architecture: String,
+    pub model: String,
+    pub mobile: bool,
+    pub bitness: Option<String>,
+    pub wow64: bool,
+    pub form_factors: Option<Vec<String>>,
+}
+
+/// Declarative JS injection. Applied at pool-page creation via
+/// ``Page.addScriptToEvaluateOnNewDocument``. Timing variants
+/// (``on_dom_content_loaded`` / ``on_load``) and URL scoping are sugar
+/// implemented by wrapping the source; only ``on_new_document`` and
+/// ``isolated_world`` map 1:1 to the CDP primitive.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptsRs {
+    pub on_new_document: Vec<String>,
+    pub on_dom_content_loaded: Vec<String>,
+    pub on_load: Vec<String>,
+    pub isolated_world: Vec<String>,
+    pub url_scoped: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,6 +157,7 @@ impl Default for ClientConfigRs {
             viewport: ViewportRs::default(),
             network: NetworkRs::default(),
             emulation: EmulationRs { javascript_enabled: true, ..Default::default() },
+            scripts: ScriptsRs::default(),
             timeout: TimeoutRs::default(),
             chrome: ChromeRs { headless: true, ..Default::default() },
         }
@@ -194,6 +234,9 @@ pub fn parse_client_config(py_dict: &Bound<'_, PyAny>) -> Result<ClientConfigRs>
         }
         if let Some(v) = d.get_item("emulation")? {
             cfg.emulation = parse_emulation(&v)?;
+        }
+        if let Some(v) = d.get_item("scripts")? {
+            cfg.scripts = parse_scripts(&v)?;
         }
         if let Some(v) = d.get_item("timeout")? {
             cfg.timeout = parse_timeout(&v)?;
@@ -328,6 +371,11 @@ fn parse_network(v: &Bound<'_, PyAny>) -> Result<NetworkRs> {
         if let Some(x) = d.get_item("user_agent")? {
             if !x.is_none() { out.user_agent = Some(x.extract().map_err(to_internal)?); }
         }
+        if let Some(x) = d.get_item("user_agent_metadata")? {
+            if !x.is_none() {
+                out.user_agent_metadata = Some(parse_user_agent_metadata(&x)?);
+            }
+        }
         if let Some(x) = d.get_item("proxy")? {
             if !x.is_none() { out.proxy = Some(x.extract().map_err(to_internal)?); }
         }
@@ -416,6 +464,136 @@ fn parse_chrome(v: &Bound<'_, PyAny>) -> Result<ChromeRs> {
         if let Some(x) = d.get_item("headless")? {
             out.headless = x.extract().map_err(to_internal)?;
         }
+    }
+    Ok(out)
+}
+
+fn parse_user_agent_brand_version(v: &Bound<'_, PyAny>) -> Result<UserAgentBrandVersionRs> {
+    let d = v.downcast::<PyDict>().map_err(|_| {
+        BlazeError::InvalidConfig("user_agent brand entry must be dict".to_string())
+    })?;
+    let brand: String = d
+        .get_item("brand")?
+        .ok_or_else(|| BlazeError::InvalidConfig("brand entry missing 'brand'".to_string()))?
+        .extract()
+        .map_err(to_internal)?;
+    let version: String = d
+        .get_item("version")?
+        .ok_or_else(|| BlazeError::InvalidConfig("brand entry missing 'version'".to_string()))?
+        .extract()
+        .map_err(to_internal)?;
+    Ok(UserAgentBrandVersionRs { brand, version })
+}
+
+fn parse_brand_list(v: &Bound<'_, PyAny>) -> Result<Vec<UserAgentBrandVersionRs>> {
+    let lst = v.downcast::<PyList>().map_err(|_| {
+        BlazeError::InvalidConfig("brands must be list of {brand,version} dicts".to_string())
+    })?;
+    lst.iter().map(|item| parse_user_agent_brand_version(&item)).collect()
+}
+
+fn parse_user_agent_metadata(v: &Bound<'_, PyAny>) -> Result<UserAgentMetadataRs> {
+    let d = v.downcast::<PyDict>().map_err(|_| {
+        BlazeError::InvalidConfig("user_agent_metadata must be dict".to_string())
+    })?;
+
+    let brands = if let Some(x) = d.get_item("brands")? {
+        if x.is_none() { None } else { Some(parse_brand_list(&x)?) }
+    } else {
+        None
+    };
+
+    let full_version_list = if let Some(x) = d.get_item("full_version_list")? {
+        if x.is_none() { None } else { Some(parse_brand_list(&x)?) }
+    } else {
+        None
+    };
+
+    let required_str = |key: &str| -> Result<String> {
+        d.get_item(key)?
+            .ok_or_else(|| {
+                BlazeError::InvalidConfig(format!("user_agent_metadata missing '{key}'"))
+            })?
+            .extract()
+            .map_err(to_internal)
+    };
+
+    let platform = required_str("platform")?;
+    let platform_version = required_str("platform_version")?;
+    let architecture = required_str("architecture")?;
+    let model = required_str("model")?;
+
+    let mobile: bool = d
+        .get_item("mobile")?
+        .ok_or_else(|| BlazeError::InvalidConfig("user_agent_metadata missing 'mobile'".to_string()))?
+        .extract()
+        .map_err(to_internal)?;
+
+    let bitness = if let Some(x) = d.get_item("bitness")? {
+        if x.is_none() { None } else { Some(x.extract::<String>().map_err(to_internal)?) }
+    } else {
+        None
+    };
+
+    let wow64 = match d.get_item("wow64")? {
+        Some(x) if !x.is_none() => x.extract().map_err(to_internal)?,
+        _ => false,
+    };
+
+    let form_factors = if let Some(x) = d.get_item("form_factors")? {
+        if x.is_none() { None } else { Some(parse_str_list(&x)?) }
+    } else {
+        None
+    };
+
+    Ok(UserAgentMetadataRs {
+        brands,
+        full_version_list,
+        platform,
+        platform_version,
+        architecture,
+        model,
+        mobile,
+        bitness,
+        wow64,
+        form_factors,
+    })
+}
+
+fn parse_scripts(v: &Bound<'_, PyAny>) -> Result<ScriptsRs> {
+    let mut out = ScriptsRs::default();
+    if let Some(d) = as_dict(v)? {
+        if let Some(x) = d.get_item("on_new_document")? {
+            out.on_new_document = parse_str_list(&x)?;
+        }
+        if let Some(x) = d.get_item("on_dom_content_loaded")? {
+            out.on_dom_content_loaded = parse_str_list(&x)?;
+        }
+        if let Some(x) = d.get_item("on_load")? {
+            out.on_load = parse_str_list(&x)?;
+        }
+        if let Some(x) = d.get_item("isolated_world")? {
+            out.isolated_world = parse_str_list(&x)?;
+        }
+        if let Some(x) = d.get_item("url_scoped")? {
+            out.url_scoped = parse_url_scoped(&x)?;
+        }
+    }
+    Ok(out)
+}
+
+fn parse_url_scoped(v: &Bound<'_, PyAny>) -> Result<HashMap<String, Vec<String>>> {
+    if v.is_none() {
+        return Ok(HashMap::new());
+    }
+    let d = v.downcast::<PyDict>().map_err(|_| {
+        BlazeError::InvalidConfig("url_scoped must be dict".to_string())
+    })?;
+    let mut out = HashMap::with_capacity(d.len());
+    for (k, val) in d.iter() {
+        let key: String = k.extract().map_err(to_internal)?;
+        let scripts = parse_str_list(&val)?;
+        out.insert(key, scripts);
     }
     Ok(out)
 }

@@ -39,12 +39,49 @@ python -m blazeweb https://example.com --json            # JSON w/ metadata
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/) (recommended):
+
+```bash
+uv add blazeweb
+```
+
+Or pip:
+
 ```bash
 pip install blazeweb
 ```
 
-That's it — the wheel ships Chrome (headless-shell 148) inside. No extra
+The wheel ships chrome-headless-shell 148 bundled inside — no extra
 `playwright install` step, no system chromium required.
+
+### Platforms without a pre-built wheel
+
+When your platform doesn't have a matching wheel on PyPI, pip/uv falls
+back to a source build. You'll need a stable Rust toolchain
+([rustup](https://rustup.rs) is the easy path); maturin takes over from
+there and compiles the native extension as part of the install.
+
+```bash
+# Triggers the source build on install — Rust compiles
+# blazeweb._blazeweb as part of the step.
+uv add blazeweb
+```
+
+Source installs don't include the bundled Chromium (that only ships
+inside wheels). Fetch it once after install:
+
+```bash
+uv run blazeweb-download-chrome      # ~100 MB, one-time
+```
+
+Or, if you'd rather not bundle, install a system Chromium
+(`chromium`, `chromium-browser`, `chrome`, or `google-chrome` on PATH).
+blazeweb auto-resolves in order:
+
+1. Explicit `chrome_path=` passed to `Client(...)`.
+2. Bundled binary in `python/blazeweb/_binaries/<platform>/`
+   (populated by `blazeweb-download-chrome`).
+3. The first system binary found on PATH.
 
 ## Why blazeweb
 
@@ -59,10 +96,10 @@ your existing options are:
   concurrency.
 - **Selenium** — older, slower, browser-driver abstraction.
 
-blazeweb's niche: **URL → fully-rendered HTML + optional PNG, fast, Python-native,
-one pip install.** Specifically tuned for high-throughput scraping pipelines
-(BBOT-style subdomain fan-outs, security recon, change detection) where you
-want hundreds of URLs per minute from a single process.
+blazeweb's sweet spot: **URL → fully-rendered HTML + optional PNG, fast,
+Python-native, one pip install.** Tuned for high-throughput read-mostly
+pipelines (BBOT-style subdomain fan-outs, security recon, change detection)
+where you want hundreds of URLs per minute from a single process.
 
 ### Benchmarks (48-URL stable gauntlet, 16-core Linux, ``chrome-headless-shell 148``)
 
@@ -235,6 +272,17 @@ All the Client config knobs are available as flags: `--user-agent`,
 `--width`, `--height`, `--timeout-ms`, `--locale`, `--timezone`, `--proxy`,
 `--header K=V`, `--headers-file FILE`, `--no-js`, `--ignore-certs`, `--chrome PATH`.
 
+Presets plug in via `--preset <module>.<NAME>` (with explicit flags
+overriding preset fields when they overlap):
+
+```bash
+python -m blazeweb --preset stealth.BASIC https://cnn.com
+python -m blazeweb --preset recon.FAST https://example.com -o page.html
+python -m blazeweb --preset archival.FULL_PAGE https://spa.example/ --screenshot shot.webp
+
+python -m blazeweb --preset list    # print every known preset and exit
+```
+
 ### Logging
 
 Both Rust and Python sides emit structured logs. Control globally via the
@@ -266,8 +314,9 @@ Every knob lives under a nested sub-config. Flat kwargs on `Client(...)` and
 |----------------|-------------------------------------------------------------------------------------|
 | (top level)    | `concurrency`, `wait_until`, `wait_after_ms`                                         |
 | `viewport`     | `width`, `height`, `device_scale_factor`, `mobile`                                  |
-| `network`      | `user_agent`, `proxy`, `extra_headers`, `ignore_https_errors`, `block_urls`, `disable_cache`, `offline`, `latency_ms`, `download_bps`, `upload_bps` |
+| `network`      | `user_agent`, `user_agent_metadata`, `proxy`, `extra_headers`, `ignore_https_errors`, `block_urls`, `disable_cache`, `offline`, `latency_ms`, `download_bps`, `upload_bps` |
 | `emulation`    | `locale`, `timezone`, `geolocation`, `prefers_color_scheme`, `javascript_enabled`   |
+| `scripts`      | `on_new_document`, `on_dom_content_loaded`, `on_load`, `isolated_world`, `url_scoped` |
 | `timeout`      | `navigation_ms`, `launch_ms`, `screenshot_ms`                                        |
 | `chrome`       | `path`, `args`, `user_data_dir`, `headless`                                          |
 
@@ -277,19 +326,172 @@ Per-call overrides (on `FetchConfig` / `ScreenshotConfig`): `extra_headers`,
 
 **Env vars**: set via `BLAZEWEB_` prefix + `__` delimiter for nesting.
 `BLAZEWEB_CONCURRENCY=32`, `BLAZEWEB_VIEWPORT__WIDTH=1920`,
-`BLAZEWEB_NETWORK__USER_AGENT='Mozilla/5.0 …'`.
+`BLAZEWEB_NETWORK__USER_AGENT='Mozilla/5.0 …'`. List fields (e.g.
+`BLAZEWEB_NETWORK__BLOCK_URLS`) JSON-parse: `'["*ad*","*track*"]'`.
 
-## What blazeweb is NOT
+**Runtime mutation**: `client.config.<section>.<field> = value` at any
+depth auto-syncs to the Rust engine; next fetch picks it up. Launch-only
+fields (`concurrency`, `chrome.*`, `network.proxy`, etc.) raise
+`ValueError` at the offending assignment. Call `client.config.snapshot()`
+for a detached deep-copy.
 
-- **Not a full browser automation framework.** No element clicking, form
-  filling, screenshot-of-selector, auto-waiting for arbitrary conditions,
-  multiple-browser-types (we target Chromium only). Use Playwright for that.
-- **Not a TLS fingerprint tool.** Chrome's native JA3 is what goes on the
-  wire. If you need curl-impersonate-style TLS spoofing, route through an
-  upstream proxy that does it.
-- **Not invisible-scraper territory.** Headless Chrome is detectable. If
-  you need full anti-detection (canvas fingerprinting, CDP detection,
-  stealth JS patches), that's a different stack.
+## Scripts, client hints, presets
+
+blazeweb's config covers everything you'd otherwise have to bolt on after
+the fact — JS injection with timing & scope, structured client-hint
+metadata, ad/tracker blocking, proxy, network throttling, locale/timezone
+overrides. Use the fields directly for one-off setups, or bundle related
+settings into a **preset** (a plain `dict`) for reuse.
+
+### Injecting JavaScript — `ScriptsConfig`
+
+Declarative JS injection, applied per pool page via CDP's
+`Page.addScriptToEvaluateOnNewDocument`. Five fields cover the common
+timing / scope choices:
+
+```python
+Client(scripts={
+    "on_new_document":       [js],  # fires before any page script, every nav
+    "on_dom_content_loaded": [js],  # wrapped in a DOMContentLoaded listener
+    "on_load":               [js],  # wrapped in a window.load listener
+    "isolated_world":        [js],  # runs in world "blazeweb_isolated";
+                                    # page JS can't read the globals it sets
+    "url_scoped":            {"/path": [js]},  # substring-gated by URL
+})
+```
+
+`on_new_document` is the CDP primitive; the rest are sugar implemented by
+wrapping the source. `isolated_world` is genuinely separate — page scripts
+live in one JS global, the isolated world in another (DOM is shared).
+Useful for scraping logic that mustn't be observable by page JS.
+
+Example — extract JSON-LD structured data during navigation:
+
+```python
+EXTRACT_LDJSON = """
+document.addEventListener('DOMContentLoaded', () => {
+  const nodes = document.querySelectorAll('script[type="application/ld+json"]');
+  const data = Array.from(nodes).map(n => n.textContent);
+  document.documentElement.dataset.ldjson = JSON.stringify(data);
+});
+"""
+with Client(scripts={"on_new_document": [EXTRACT_LDJSON]}) as c:
+    html = c.fetch(url)
+    # data-ldjson attribute now present on <html>; pull it out with .dom.find(...)
+```
+
+**CDP-level limitations** (not blazeweb's — documented so you don't get
+surprised):
+- Scripts do NOT propagate into cross-origin iframes.
+- Scripts do NOT run in service workers / shared workers.
+- Runtime updates to `config.scripts.*` affect only *new* pool pages;
+  existing pool pages keep their original registrations.
+
+### Structured User-Agent — `network.user_agent_metadata`
+
+The `User-Agent` header has a structured counterpart: the `Sec-CH-UA-*`
+client hints. If you override the UA but leave the client hints alone,
+servers that compare the two see a mismatch — itself a fingerprinting
+tell. Pair them:
+
+```python
+Client(
+    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    user_agent_metadata={
+        "brands": [
+            {"brand": "Google Chrome", "version": "131"},
+            {"brand": "Chromium",      "version": "131"},
+            {"brand": "Not_A Brand",   "version": "24"},
+        ],
+        "platform": "Linux",
+        "platform_version": "",
+        "architecture": "x86",
+        "model": "",
+        "mobile": False,
+        "bitness": "64",
+    },
+)
+```
+
+### Presets — bundles you can spread
+
+A preset is a `dict` of kwargs. Spread it into `Client(...)`:
+
+```python
+from blazeweb import Client
+from blazeweb.presets import stealth, recon, archival
+
+Client(**recon.FAST).fetch(url)
+
+# Pre-merge to tweak (Python forbids duplicate kwargs across multiple
+# ** spreads or between ** and an explicit kwarg)
+Client(**{**recon.FAST, "user_agent": "CorpScanner/1.0"}).fetch(url)
+
+# Compose two presets
+Client(**{**stealth.BASIC, **recon.FAST}).fetch(url)
+```
+
+Rolling your own is just a `dict` literal:
+
+```python
+CORP_CRAWLER = {
+    "user_agent": "CorpCrawler/2.0 (+https://corp.example/crawler)",
+    "extra_headers": {"X-Crawler-Token": os.environ["CRAWLER_TOKEN"]},
+    "block_urls": ["*://*.tracker.example/*"],
+    "scripts": {"on_load": [EXTRACT_LDJSON]},
+}
+with Client(**CORP_CRAWLER) as c: ...
+```
+
+**Built-in presets:**
+
+| Preset                          | What it sets                                                                                         | When to reach for it                                                |
+|---------------------------------|------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------|
+| `presets.stealth.BASIC`         | UA brand swap + matching `Sec-CH-UA` + 5 JS patches (webdriver, chrome.runtime, plugins, permissions, hardware) | Akamai-fronted sites that first-byte-match `HeadlessChrome`         |
+| `presets.stealth.FINGERPRINT`   | `BASIC` + WebGL vendor/renderer override + canvas `toDataURL` noise                                   | DataDome / PerimeterX / lower-sensitivity Cloudflare                |
+| `presets.recon.FAST`            | `javascript_enabled=False`, 5s nav timeout, ad/tracker block list                                     | BBOT-style subdomain sweeps; you want bytes, fast, no JS            |
+| `presets.archival.FULL_PAGE`    | 1920×1080 viewport, 30s nav timeout, 2s post-load settle                                              | Change detection / wayback-style snapshots of SPA-heavy sites       |
+
+### Stealth preset — what each patch counters
+
+`blazeweb.presets.stealth` is modeled on
+[rebrowser-patches](https://github.com/rebrowser/rebrowser-patches) —
+opt-in, off by default, every patch commented with the detection vector
+it counters. No silent evasion.
+
+The default chrome-headless-shell UA contains the literal substring
+`HeadlessChrome`, which Akamai Bot Manager first-byte-matches to return a
+250-byte `Unknown Error` stub in ~60 ms (observed on `cnn.com`, `reuters.com`,
+`linkedin.com`). Beyond UA, anti-bot scripts probe JS runtime globals.
+
+| `stealth.BASIC` patch                                             | Counters                                                      |
+|-------------------------------------------------------------------|---------------------------------------------------------------|
+| UA + matching `Sec-CH-UA` brand metadata                          | First-byte UA substring checks; client-hint consistency       |
+| `navigator.webdriver` → `undefined`                               | The most-detected automation tell                             |
+| `window.chrome.runtime` populated                                 | Checks for `chrome.runtime.OnInstalledReason`                 |
+| `navigator.plugins` with 5 PDF-viewer entries                     | `plugins.length === 0` heuristic                              |
+| `navigator.permissions.query` returns `default` for notifications | Headless returns `denied`; real Chrome returns `default`      |
+| `navigator.hardwareConcurrency = 8`, `deviceMemory = 8`           | CI-env low-value heuristic                                    |
+
+| `stealth.FINGERPRINT` also adds                                        | Counters                                                       |
+|------------------------------------------------------------------------|----------------------------------------------------------------|
+| WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` override     | `SwiftShader` identity as the software-renderer giveaway       |
+| Canvas `toDataURL` per-session noise                                   | Bit-identical canvas fingerprint hash                          |
+
+**What stealth doesn't fix** (documented rather than silently missing):
+
+- **TLS ClientHello fingerprint** — chrome-headless-shell uses the same
+  BoringSSL build as full Chrome, so JA3/JA4 already matches "real Chrome"
+  by default. Vendors that fingerprint further at the network layer need
+  something like `curl-impersonate` or the retired `wreq`/BoringSSL path
+  that lived on blazeweb's pre-CDP branch.
+- **Cross-origin iframe propagation** — CDP init scripts don't reach
+  cross-origin iframes. Cloudflare Turnstile specifically runs in one.
+- **Service-worker / shared-worker scope** — same limitation.
+- **Behavioral simulation** — mouse curves, scroll physics, timing jitter.
+- **`cdc_*` window property** injected when `Runtime.enable` is called —
+  requires a Chromium binary patch (see rebrowser-patches).
 
 ## Development
 

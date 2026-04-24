@@ -37,6 +37,40 @@ def test_no_args_errors():
     assert b"URL is required" in p.stderr or b"usage" in p.stderr
 
 
+def test_preset_list_prints_known_presets():
+    p = _run(["--preset", "list"])
+    assert p.returncode == 0, p.stderr
+    out = p.stdout.decode()
+    assert "stealth.BASIC" in out
+    assert "stealth.FINGERPRINT" in out
+    assert "recon.FAST" in out
+    assert "archival.FULL_PAGE" in out
+
+
+def test_preset_unknown_errors_cleanly():
+    p = _run(["--preset", "stealth.NOPE", URL])
+    assert p.returncode != 0
+    assert b"unknown preset" in p.stderr
+
+
+def test_preset_malformed_errors_cleanly():
+    p = _run(["--preset", "stealthBASIC", URL])  # missing dot
+    assert p.returncode != 0
+    # argparse error-exit path prints usage + the message
+    assert b"module.NAME" in p.stderr or b"stealth.BASIC" in p.stderr
+
+
+def test_preset_recon_fast_smoke_no_js(tmp_path: Path):
+    """recon.FAST sets javascript_enabled=False; we can't easily assert that
+    end-to-end without a page that depends on JS, but we can at least confirm
+    the preset spreads and a fetch succeeds."""
+    out = tmp_path / "page.html"
+    p = _run(["--preset", "recon.FAST", URL, "-o", str(out)])
+    assert p.returncode == 0, p.stderr
+    assert out.exists()
+    assert "Example Domain" in out.read_text()
+
+
 def test_fetch_url_stdout_is_html():
     p = _run([URL])
     assert p.returncode == 0, p.stderr
