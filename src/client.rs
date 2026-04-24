@@ -24,12 +24,16 @@ use crate::result::{RawFetchOutput, RawRenderOutput};
 use crate::runtime;
 
 /// Opaque wrapper for the chromium Browser + its handler task + limits.
+///
+/// `config` is wrapped in RwLock so runtime updates (see `Client::update_config`)
+/// can swap it atomically without blocking in-flight fetches for long —
+/// readers clone out at fetch start; the writer briefly takes exclusive access.
 struct ClientState {
     runtime: Arc<tokio::runtime::Runtime>,
     browser: Arc<Browser>,
     handler_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     semaphore: Arc<Semaphore>,
-    config: ClientConfigRs,
+    config: parking_lot::RwLock<ClientConfigRs>,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -119,11 +123,21 @@ impl Client {
             browser: Arc::new(browser),
             handler_task: parking_lot::Mutex::new(Some(handler_task)),
             semaphore: Arc::new(Semaphore::new(config_rs.concurrency.max(1))),
-            config: config_rs,
+            config: parking_lot::RwLock::new(config_rs),
             closed: std::sync::atomic::AtomicBool::new(false),
         };
 
         Ok(Self { inner: Arc::new(state) })
+    }
+
+    /// Swap in a new config. Launch-only fields (chrome.*, concurrency, proxy,
+    /// ignore_https_errors, launch_ms) are validated Python-side before this
+    /// call — we just replace atomically. Next fetch sees the new values.
+    fn update_config(&self, config: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.check_open().map_err(PyErr::from)?;
+        let new_cfg = parse_client_config(config).map_err(PyErr::from)?;
+        *self.inner.config.write() = new_cfg;
+        Ok(())
     }
 
     /// Fetch URL → RawRenderOutput (HTML only).
@@ -144,10 +158,11 @@ impl Client {
                 let _permit = state.semaphore.acquire().await.map_err(|e| {
                     BlazeError::Internal(format!("semaphore closed: {e}"))
                 })?;
+                let base_cfg = state.config.read().clone();
                 let out = capture_page(
                     &state.browser,
                     &url,
-                    &state.config,
+                    &base_cfg,
                     &fetch_cfg,
                     &shot_cfg,
                     CaptureMode::Html,
@@ -184,10 +199,11 @@ impl Client {
                     let _permit = state.semaphore.acquire().await.map_err(|e| {
                         BlazeError::Internal(format!("semaphore closed: {e}"))
                     })?;
+                    let base_cfg = state.config.read().clone();
                     let out = capture_page(
                         &state.browser,
                         &url,
-                        &state.config,
+                        &base_cfg,
                         &fetch_cfg,
                         &shot_cfg,
                         CaptureMode::Png,
@@ -220,10 +236,11 @@ impl Client {
                 let _permit = state.semaphore.acquire().await.map_err(|e| {
                     BlazeError::Internal(format!("semaphore closed: {e}"))
                 })?;
+                let base_cfg = state.config.read().clone();
                 let out = capture_page(
                     &state.browser,
                     &url,
-                    &state.config,
+                    &base_cfg,
                     &fetch_cfg,
                     &shot_cfg,
                     CaptureMode::Both,
@@ -272,13 +289,15 @@ impl Client {
             py.allow_threads(move || {
                 runtime.block_on(async move {
                     let shot_cfg = ScreenshotConfigRs::default();
+                    // Snapshot config ONCE for the whole batch — in-batch updates don't re-apply.
+                    let base_cfg = state.config.read().clone();
                     let tasks: Vec<_> = urls
                         .iter()
                         .cloned()
                         .map(|url| {
                             let browser = state.browser.clone();
                             let sem = state.semaphore.clone();
-                            let base = state.config.clone();
+                            let base = base_cfg.clone();
                             let fc = fetch_cfg.clone();
                             let sc = shot_cfg.clone();
                             tokio::spawn(async move {
