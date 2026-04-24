@@ -193,6 +193,26 @@ class ClientConfig(BaseSettings):
     """Max in-flight pages across all Python threads calling this Client.
     Excess calls block on an internal Semaphore rather than over-subscribing Chrome."""
 
+    wait_until: Literal["load", "domcontentloaded"] = "load"
+    """Lifecycle event to wait for before capturing:
+
+    - ``"load"`` (default) — waits for ``window.onload``: all subresources
+      downloaded, deferred scripts executed, SPAs hydrated. Matches
+      Playwright/Puppeteer convention. Most complete and correct for general
+      scraping. On tracker-heavy pages adds time for trackers to finish.
+    - ``"domcontentloaded"`` — returns as soon as the HTML parser has finished
+      building the DOM. Faster on pages with slow third-party subresources, but
+      may return before async-rendered SPA content is present. Opt-in for speed
+      on lean/static sites where you know DCL is sufficient.
+
+    Falls back to ``load`` automatically for edge cases where DCL doesn't fire
+    (very short / empty documents)."""
+
+    wait_after_ms: int = Field(0, ge=0, le=60000)
+    """Extra sleep after the chosen lifecycle event (ms). Default 0. Useful for
+    SPAs that mutate the DOM via async JS AFTER DCL/load — e.g. set
+    ``wait_after_ms=500`` to let React-style frameworks finish rendering."""
+
     viewport: ViewportConfig = Field(default_factory=ViewportConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     emulation: EmulationConfig = Field(default_factory=EmulationConfig)
@@ -264,6 +284,12 @@ class ClientConfig(BaseSettings):
         if "concurrency" in kwargs:
             top["concurrency"] = kwargs.pop("concurrency")
 
+        if "wait_until" in kwargs:
+            top["wait_until"] = kwargs.pop("wait_until")
+
+        if "wait_after_ms" in kwargs:
+            top["wait_after_ms"] = kwargs.pop("wait_after_ms")
+
         for k, val in kwargs.items():
             if k in flat_map:
                 sub, field = flat_map[k]
@@ -307,6 +333,12 @@ class FetchConfig(BaseModel):
     timeout_ms: int | None = Field(None, ge=100)
     """Overrides the Client's ``timeout.navigation_ms`` for this call."""
 
+    wait_until: Literal["domcontentloaded", "load"] | None = None
+    """Overrides the Client's ``wait_until`` for this call. ``None`` inherits."""
+
+    wait_after_ms: int | None = Field(None, ge=0, le=60000)
+    """Overrides the Client's ``wait_after_ms`` for this call. ``None`` inherits."""
+
 
 class ScreenshotConfig(BaseModel):
     """Per-call overrides for ``Client.screenshot()``."""
@@ -322,6 +354,18 @@ class ScreenshotConfig(BaseModel):
     timeout_ms: int | None = Field(None, ge=100)
 
     extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    format: Literal["png", "jpeg", "webp"] = "png"
+    """Image encoding. ``png`` is lossless (default); ``jpeg`` / ``webp`` take ``quality``."""
+
+    quality: int | None = Field(None, ge=0, le=100)
+    """0-100 quality for ``jpeg`` / ``webp``. Ignored by PNG. None → chromium default."""
+
+    wait_until: Literal["domcontentloaded", "load"] | None = None
+    """Overrides the Client's ``wait_until`` for this screenshot. ``None`` inherits."""
+
+    wait_after_ms: int | None = Field(None, ge=0, le=60000)
+    """Overrides the Client's ``wait_after_ms`` for this screenshot. ``None`` inherits."""
 
 
 __all__ = [

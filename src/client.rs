@@ -11,7 +11,6 @@ use chromiumoxide::{Browser, BrowserConfig};
 use futures::StreamExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
-use tokio::sync::Semaphore;
 
 use crate::chrome;
 use crate::config::{
@@ -20,19 +19,23 @@ use crate::config::{
 };
 use crate::engine::{capture_page, CaptureMode};
 use crate::error::{BlazeError, Result};
+use crate::pool::PagePool;
 use crate::result::{RawFetchOutput, RawRenderOutput};
 use crate::runtime;
 
-/// Opaque wrapper for the chromium Browser + its handler task + limits.
+/// Opaque wrapper for the chromium Browser + the page pool + its handler task.
 ///
 /// `config` is wrapped in RwLock so runtime updates (see `Client::update_config`)
 /// can swap it atomically without blocking in-flight fetches for long —
 /// readers clone out at fetch start; the writer briefly takes exclusive access.
 struct ClientState {
     runtime: Arc<tokio::runtime::Runtime>,
+    /// Held so the browser process stays alive while the pool exists;
+    /// accessed indirectly through pooled pages, not directly by name.
+    #[allow(dead_code)]
     browser: Arc<Browser>,
+    pool: Arc<PagePool>,
     handler_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    semaphore: Arc<Semaphore>,
     config: parking_lot::RwLock<ClientConfigRs>,
     closed: std::sync::atomic::AtomicBool,
 }
@@ -67,10 +70,15 @@ impl Client {
         let config_rs = parse_client_config(config).map_err(PyErr::from)?;
         let chrome_path = chrome::resolve(config_rs.chrome.path.as_deref())
             .map_err(PyErr::from)?;
+        let chrome_display = chrome_path.display().to_string();
 
         let runtime = runtime::shared();
 
-        // Build Chrome CLI args from config.
+        // Build Chrome CLI args from config. The curated perf flags below are
+        // the "Puppeteer/Playwright headless speedup" set — they strip background
+        // services, translation, extensions, sync, phishing detection, etc.,
+        // which chromium otherwise spins up by default even in --headless=new.
+        // Measurable effect on per-tab CPU + startup time.
         let mut builder = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .arg("--headless=new")
@@ -78,6 +86,29 @@ impl Client {
             .arg("--no-sandbox")
             .arg("--hide-scrollbars")
             .arg("--disable-dev-shm-usage")
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--disable-background-networking")
+            .arg("--disable-background-timer-throttling")
+            .arg("--disable-backgrounding-occluded-windows")
+            .arg("--disable-breakpad")
+            .arg("--disable-client-side-phishing-detection")
+            .arg("--disable-component-extensions-with-background-pages")
+            .arg("--disable-component-update")
+            .arg("--disable-default-apps")
+            .arg("--disable-domain-reliability")
+            .arg("--disable-extensions")
+            .arg("--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,IsolateOrigins,site-per-process")
+            .arg("--disable-hang-monitor")
+            .arg("--disable-ipc-flooding-protection")
+            .arg("--disable-popup-blocking")
+            .arg("--disable-prompt-on-repost")
+            .arg("--disable-renderer-backgrounding")
+            .arg("--disable-sync")
+            .arg("--metrics-recording-only")
+            .arg("--mute-audio")
+            .arg("--password-store=basic")
+            .arg("--use-mock-keychain")
             .arg(format!(
                 "--window-size={},{}",
                 config_rs.viewport.width, config_rs.viewport.height
@@ -96,33 +127,47 @@ impl Client {
             builder = builder.arg(arg.clone());
         }
 
+        log::info!(
+            target: "blazeweb::client",
+            "launching chrome ({} concurrency, viewport {}x{}, chrome={})",
+            config_rs.concurrency,
+            config_rs.viewport.width,
+            config_rs.viewport.height,
+            chrome_display
+        );
+
         let cfg = builder
             .build()
             .map_err(|e| BlazeError::LaunchFailed(e.to_string()))?;
 
-        let (browser, handler_task) = py.allow_threads(|| {
-            runtime.block_on(async {
-                let (browser, mut handler) = Browser::launch(cfg)
-                    .await
-                    .map_err(BlazeError::from)?;
-                let task = tokio::spawn(async move {
-                    while let Some(res) = handler.next().await {
-                        if let Err(_) = res {
-                            // Handler ended — browser will report errors on the next page op.
-                            break;
+        let concurrency = config_rs.concurrency.max(1);
+        let config_for_pool = config_rs.clone();
+        let (browser, handler_task, pool) = py
+            .allow_threads(|| {
+                runtime.block_on(async {
+                    let (browser, mut handler) = Browser::launch(cfg)
+                        .await
+                        .map_err(BlazeError::from)?;
+                    let task = tokio::spawn(async move {
+                        while let Some(res) = handler.next().await {
+                            if let Err(_) = res {
+                                // Handler ended — browser will report errors on the next page op.
+                                break;
+                            }
                         }
-                    }
-                });
-                Ok::<_, BlazeError>((browser, task))
+                    });
+                    let pool =
+                        PagePool::new(&browser, concurrency, &config_for_pool).await?;
+                    Ok::<_, BlazeError>((browser, task, pool))
+                })
             })
-        })
-        .map_err(PyErr::from)?;
+            .map_err(PyErr::from)?;
 
         let state = ClientState {
             runtime: runtime.clone(),
             browser: Arc::new(browser),
+            pool,
             handler_task: parking_lot::Mutex::new(Some(handler_task)),
-            semaphore: Arc::new(Semaphore::new(config_rs.concurrency.max(1))),
             config: parking_lot::RwLock::new(config_rs),
             closed: std::sync::atomic::AtomicBool::new(false),
         };
@@ -136,6 +181,7 @@ impl Client {
     fn update_config(&self, config: &Bound<'_, PyAny>) -> PyResult<()> {
         self.check_open().map_err(PyErr::from)?;
         let new_cfg = parse_client_config(config).map_err(PyErr::from)?;
+        log::debug!(target: "blazeweb::client", "update_config applied");
         *self.inner.config.write() = new_cfg;
         Ok(())
     }
@@ -155,12 +201,10 @@ impl Client {
 
         py.allow_threads(move || {
             runtime.block_on(async move {
-                let _permit = state.semaphore.acquire().await.map_err(|e| {
-                    BlazeError::Internal(format!("semaphore closed: {e}"))
-                })?;
+                let guard = state.pool.acquire().await?;
                 let base_cfg = state.config.read().clone();
                 let out = capture_page(
-                    &state.browser,
+                    &guard,
                     &url,
                     &base_cfg,
                     &fetch_cfg,
@@ -180,7 +224,7 @@ impl Client {
         .map_err(PyErr::from)
     }
 
-    /// Screenshot URL → PNG bytes.
+    /// Screenshot URL → image bytes (png/jpeg/webp depending on per_shot.format).
     fn screenshot<'py>(
         &self,
         py: Python<'py>,
@@ -196,12 +240,10 @@ impl Client {
         let png = py
             .allow_threads(move || {
                 runtime.block_on(async move {
-                    let _permit = state.semaphore.acquire().await.map_err(|e| {
-                        BlazeError::Internal(format!("semaphore closed: {e}"))
-                    })?;
+                    let guard = state.pool.acquire().await?;
                     let base_cfg = state.config.read().clone();
                     let out = capture_page(
-                        &state.browser,
+                        &guard,
                         &url,
                         &base_cfg,
                         &fetch_cfg,
@@ -217,7 +259,7 @@ impl Client {
         Ok(PyBytes::new(py, &png))
     }
 
-    /// Fetch URL → RawFetchOutput (HTML + PNG from one visit).
+    /// Fetch URL → RawFetchOutput (HTML + image from one visit).
     fn fetch_all(
         &self,
         py: Python<'_>,
@@ -233,12 +275,10 @@ impl Client {
 
         py.allow_threads(move || {
             runtime.block_on(async move {
-                let _permit = state.semaphore.acquire().await.map_err(|e| {
-                    BlazeError::Internal(format!("semaphore closed: {e}"))
-                })?;
+                let guard = state.pool.acquire().await?;
                 let base_cfg = state.config.read().clone();
                 let out = capture_page(
-                    &state.browser,
+                    &guard,
                     &url,
                     &base_cfg,
                     &fetch_cfg,
@@ -270,6 +310,11 @@ impl Client {
         per_call: &Bound<'_, PyAny>,
     ) -> PyResult<Bound<'py, PyList>> {
         self.check_open().map_err(PyErr::from)?;
+        log::debug!(
+            target: "blazeweb::client",
+            "batch dispatch: {} URLs, capture={capture}",
+            urls.len()
+        );
         let mode = match capture {
             "html" => CaptureMode::Html,
             "png" => CaptureMode::Png,
@@ -295,16 +340,13 @@ impl Client {
                         .iter()
                         .cloned()
                         .map(|url| {
-                            let browser = state.browser.clone();
-                            let sem = state.semaphore.clone();
+                            let pool = state.pool.clone();
                             let base = base_cfg.clone();
                             let fc = fetch_cfg.clone();
                             let sc = shot_cfg.clone();
                             tokio::spawn(async move {
-                                let _permit = sem.acquire().await.map_err(|e| {
-                                    BlazeError::Internal(format!("sem: {e}"))
-                                })?;
-                                capture_page(&browser, &url, &base, &fc, &sc, mode).await
+                                let guard = pool.acquire().await?;
+                                capture_page(&guard, &url, &base, &fc, &sc, mode).await
                             })
                         })
                         .collect();
@@ -350,19 +392,48 @@ impl Client {
                     }
                 },
                 Err(e) => {
-                    // For v1.0, raise on first failure. Future: accept a partial-results flag.
-                    return Err(PyErr::from(e));
+                    // Per-URL failure: return a stub result with the error captured.
+                    // One slow / bad URL must not kill an otherwise healthy batch.
+                    log::warn!("batch item failed: {e}");
+                    match mode {
+                        CaptureMode::Html => {
+                            let raw = RawRenderOutput {
+                                html: String::new(),
+                                errors: vec![e.to_string()],
+                                final_url: String::new(),
+                                status_code: 0,
+                                elapsed_s: 0.0,
+                            };
+                            results.append(raw)?;
+                        }
+                        CaptureMode::Png => {
+                            results.append(PyBytes::new(py, b""))?;
+                        }
+                        CaptureMode::Both => {
+                            let raw = RawFetchOutput {
+                                html: String::new(),
+                                png: Vec::new(),
+                                errors: vec![e.to_string()],
+                                final_url: String::new(),
+                                status_code: 0,
+                                elapsed_s: 0.0,
+                            };
+                            results.append(raw)?;
+                        }
+                    }
                 }
             }
         }
         Ok(results)
     }
 
-    /// Explicit shutdown. Drops the Browser (chromium quits) and joins the handler task.
+    /// Explicit shutdown. Closes pooled pages, drops the Browser (chromium
+    /// quits), and joins the handler task.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         if self.inner.is_closed() {
             return Ok(());
         }
+        log::info!(target: "blazeweb::client", "Client.close");
         self.inner
             .closed
             .store(true, std::sync::atomic::Ordering::Release);
@@ -370,8 +441,8 @@ impl Client {
         let runtime = state.runtime.clone();
         py.allow_threads(move || {
             runtime.block_on(async move {
-                // Drop our strong Browser ref; any in-flight tasks will notice closure.
-                // The handler task will end when the Browser's receiver stream closes.
+                // Close pooled pages before the browser goes away.
+                state.pool.close_all().await;
                 if let Some(task) = state.handler_task.lock().take() {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), task).await;
                 }

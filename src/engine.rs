@@ -1,28 +1,23 @@
-//! Core CDP dance: launch a page, apply config, navigate, capture, return.
+//! Core navigate-and-capture step, running on a page drawn from the pool.
 //!
-//! Driven by `Client` via tokio. All async, all inside `py.allow_threads()` —
-//! the GIL is released for the entire flight.
+//! Driven by `Client` via tokio. All async, all inside `py.allow_threads()`.
+//! One pooled page per fetch: configure (per-call overrides only), navigate,
+//! capture, reset on error. Pool pages keep their base config + console
+//! listeners across fetches.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chromiumoxide::cdp::browser_protocol::emulation::{
-    SetDeviceMetricsOverrideParams, SetGeolocationOverrideParams, SetLocaleOverrideParams,
-    SetScriptExecutionDisabledParams, SetTimezoneOverrideParams,
-};
-use chromiumoxide::cdp::browser_protocol::network::{
-    EmulateNetworkConditionsParams, SetCacheDisabledParams, SetExtraHttpHeadersParams,
-    SetUserAgentOverrideParams,
-};
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
 use chromiumoxide::cdp::browser_protocol::page::{
-    CaptureScreenshotFormat, CaptureScreenshotParams,
+    CaptureScreenshotFormat, CaptureScreenshotParams, EventDomContentEventFired,
+    EventLoadEventFired,
 };
-use chromiumoxide::Browser;
 use futures::StreamExt;
-use parking_lot::Mutex;
 
-use crate::config::{ClientConfigRs, FetchConfigRs, ScreenshotConfigRs};
+use crate::config::{ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs, WaitUntil};
 use crate::error::{BlazeError, Result};
+use crate::pool::PageGuard;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
@@ -40,9 +35,9 @@ pub struct CaptureOutput {
     pub elapsed_s: f64,
 }
 
-/// Capture a single URL with the given config. All CDP calls inside.
+/// Navigate an already-configured pooled page to `url` and capture.
 pub async fn capture_page(
-    browser: &Browser,
+    guard: &PageGuard,
     url: &str,
     base: &ClientConfigRs,
     per_call: &FetchConfigRs,
@@ -50,167 +45,130 @@ pub async fn capture_page(
     mode: CaptureMode,
 ) -> Result<CaptureOutput> {
     let t0 = Instant::now();
+    log::debug!(target: "blazeweb::engine", "[{url}] capture_page mode={mode:?}");
 
     let timeout_ms = per_call
         .timeout_ms
         .or(per_shot.timeout_ms)
         .unwrap_or(base.timeout.navigation_ms);
 
+    let page = guard.page();
+
     let fut = async {
-        let page = browser
-            .new_page("about:blank")
-            .await
-            .map_err(BlazeError::from)?;
-
-        // --- Apply per-page config BEFORE navigate ---
-        let (viewport_w, viewport_h) = per_shot
-            .viewport
-            .unwrap_or((base.viewport.width, base.viewport.height));
-        page.execute(
-            SetDeviceMetricsOverrideParams::builder()
-                .width(viewport_w as i64)
-                .height(viewport_h as i64)
-                .device_scale_factor(base.viewport.device_scale_factor)
-                .mobile(base.viewport.mobile)
-                .build()
-                .map_err(|e| BlazeError::Cdp(format!("metrics: {e}")))?,
-        )
-        .await?;
-
-        if let Some(ua) = &base.network.user_agent {
+        // Per-call viewport override (e.g. different size just for this screenshot).
+        if let Some((w, h)) = per_shot.viewport {
+            log::trace!(target: "blazeweb::engine", "[{url}] override viewport {w}x{h}");
             page.execute(
-                SetUserAgentOverrideParams::builder()
-                    .user_agent(ua.clone())
+                SetDeviceMetricsOverrideParams::builder()
+                    .width(w as i64)
+                    .height(h as i64)
+                    .device_scale_factor(base.viewport.device_scale_factor)
+                    .mobile(base.viewport.mobile)
                     .build()
-                    .map_err(|e| BlazeError::Cdp(format!("UA: {e}")))?,
+                    .map_err(|e| BlazeError::Cdp(format!("metrics: {e}")))?,
             )
             .await?;
         }
 
-        // Merge headers: base < per_call < per_shot (rightmost wins).
-        let mut headers_map = base.network.extra_headers.clone();
-        for (k, v) in &per_call.extra_headers {
-            headers_map.insert(k.clone(), v.clone());
-        }
-        for (k, v) in &per_shot.extra_headers {
-            headers_map.insert(k.clone(), v.clone());
-        }
-        if !headers_map.is_empty() {
+        // Per-call header merge — only if there ARE per-call / per-shot extras.
+        if !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty() {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] merging headers (per_call={}, per_shot={})",
+                per_call.extra_headers.len(),
+                per_shot.extra_headers.len()
+            );
+            let mut headers_map = base.network.extra_headers.clone();
+            for (k, v) in &per_call.extra_headers {
+                headers_map.insert(k.clone(), v.clone());
+            }
+            for (k, v) in &per_shot.extra_headers {
+                headers_map.insert(k.clone(), v.clone());
+            }
             let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(
-                serde_json::to_value(&headers_map).map_err(|e| BlazeError::Internal(e.to_string()))?,
+                serde_json::to_value(&headers_map)
+                    .map_err(|e| BlazeError::Internal(e.to_string()))?,
             );
             page.execute(SetExtraHttpHeadersParams::new(headers)).await?;
         }
 
-        if base.network.disable_cache {
-            page.execute(SetCacheDisabledParams::new(true)).await?;
-        }
+        // Navigate:
+        //   1. Subscribe to lifecycle-event streams BEFORE navigate (race-free).
+        //   2. page.goto(url) sends Page.navigate CDP and returns quickly on ack.
+        //   3. Explicitly await the configured lifecycle event on its stream.
+        //
+        // Crucially, we do NOT race goto with the event streams. `page.goto`
+        // returns in a few ms (just waits for the navigate ack), which is BEFORE
+        // any lifecycle event can fire. Racing them would cause the goto arm
+        // to win and we'd skip waiting entirely → empty/stale content. Ask me
+        // how I know.
+        let wait_until = per_call
+            .wait_until
+            .or(per_shot.wait_until)
+            .unwrap_or(base.wait_until);
+        let t_goto = Instant::now();
+        log::trace!(target: "blazeweb::engine", "[{url}] subscribe lifecycle streams");
+        let mut dcl_stream = page
+            .event_listener::<EventDomContentEventFired>()
+            .await
+            .map_err(BlazeError::from)?;
+        let mut load_stream = page
+            .event_listener::<EventLoadEventFired>()
+            .await
+            .map_err(BlazeError::from)?;
 
-        if base.network.offline
-            || base.network.latency_ms.is_some()
-            || base.network.download_bps.is_some()
-            || base.network.upload_bps.is_some()
-        {
-            page.execute(
-                EmulateNetworkConditionsParams::builder()
-                    .offline(base.network.offline)
-                    .latency(base.network.latency_ms.unwrap_or(0.0))
-                    .download_throughput(
-                        base.network.download_bps.map(|x| x as f64).unwrap_or(-1.0),
-                    )
-                    .upload_throughput(
-                        base.network.upload_bps.map(|x| x as f64).unwrap_or(-1.0),
-                    )
-                    .build()
-                    .map_err(|e| BlazeError::Cdp(format!("net emu: {e}")))?,
-            )
-            .await?;
-        }
+        log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
+        page.goto(url).await?;
+        let t_nav_ack = t_goto.elapsed();
+        log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
 
-        if let Some(locale) = &base.emulation.locale {
-            page.execute(
-                SetLocaleOverrideParams::builder()
-                    .locale(locale.clone())
-                    .build(),
-            )
-            .await?;
-        }
-
-        if let Some(tz) = &base.emulation.timezone {
-            page.execute(
-                SetTimezoneOverrideParams::builder()
-                    .timezone_id(tz.clone())
-                    .build()
-                    .map_err(|e| BlazeError::Cdp(format!("tz: {e}")))?,
-            )
-            .await?;
-        }
-
-        if let Some((lat, lon)) = base.emulation.geolocation {
-            page.execute(
-                SetGeolocationOverrideParams::builder()
-                    .latitude(lat)
-                    .longitude(lon)
-                    .accuracy(0.0)
-                    .build(),
-            )
-            .await?;
-        }
-
-        if !base.emulation.javascript_enabled {
-            page.execute(SetScriptExecutionDisabledParams::new(true)).await?;
-        }
-
-        // --- Wire up console / error listeners BEFORE navigate ---
-        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        {
-            use chromiumoxide::cdp::browser_protocol::log::EventEntryAdded;
-            use chromiumoxide::cdp::js_protocol::runtime::EventExceptionThrown;
-
-            let errors_cl = errors.clone();
-            let mut console_stream = page
-                .event_listener::<EventEntryAdded>()
-                .await
-                .map_err(BlazeError::from)?;
-            tokio::spawn(async move {
-                while let Some(evt) = console_stream.next().await {
-                    let entry = &evt.entry;
-                    if matches!(
-                        entry.level,
-                        chromiumoxide::cdp::browser_protocol::log::LogEntryLevel::Error
-                    ) {
-                        errors_cl.lock().push(entry.text.clone());
+        // Wait for the configured lifecycle event.
+        match wait_until {
+            WaitUntil::DomContentLoaded => {
+                // Prefer DCL; fall through to load for tiny/empty pages where
+                // DCL doesn't fire.
+                tokio::select! {
+                    _ = dcl_stream.next() => {
+                        log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
+                    }
+                    _ = load_stream.next() => {
+                        log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
                     }
                 }
-            });
+            }
+            WaitUntil::Load => {
+                load_stream.next().await;
+                log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+            }
+        }
+        log::trace!(
+            target: "blazeweb::engine",
+            "[{url}] nav done in {:?}",
+            t_goto.elapsed()
+        );
 
-            let errors_cl = errors.clone();
-            let mut exc_stream = page
-                .event_listener::<EventExceptionThrown>()
-                .await
-                .map_err(BlazeError::from)?;
-            tokio::spawn(async move {
-                while let Some(evt) = exc_stream.next().await {
-                    let det = &evt.exception_details;
-                    let msg = det
-                        .exception
-                        .as_ref()
-                        .and_then(|o| o.description.clone())
-                        .unwrap_or_else(|| det.text.clone());
-                    errors_cl.lock().push(msg);
-                }
-            });
+        // Optional post-event settle — lets late async JS mutate the DOM on
+        // SPAs that render AFTER the chosen lifecycle event fires.
+        let wait_after_ms = per_call
+            .wait_after_ms
+            .or(per_shot.wait_after_ms)
+            .unwrap_or(base.wait_after_ms);
+        if wait_after_ms > 0 {
+            log::trace!(target: "blazeweb::engine", "[{url}] settle {wait_after_ms}ms");
+            tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
         }
 
-        // --- Navigate ---
-        page.goto(url).await?;
-        page.wait_for_navigation().await?;
-
-        let final_url = page.url().await.ok().flatten().unwrap_or_else(|| url.to_string());
-        // Chromium's CDP doesn't directly expose "final HTTP status" on the page. We'd
-        // need Network.responseReceived listeners for that. For v1.0, we default to 200
-        // on a successful navigation and 0 otherwise. Richer status capture is a v1.1 task.
-        let status_code: u16 = 200;
+        let final_url = page
+            .url()
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| url.to_string());
+        // Status comes from the pool's persistent Network.responseReceived listener.
+        // Filled as soon as response headers arrive — before DCL, before load.
+        // Far more reliable than wait_for_navigation_response, which waits for
+        // frameStoppedLoading (roughly load event).
+        let status_code: u16 = guard.main_status().unwrap_or(0);
 
         let mut out = CaptureOutput {
             html: None,
@@ -222,33 +180,84 @@ pub async fn capture_page(
         };
 
         if matches!(mode, CaptureMode::Html | CaptureMode::Both) {
-            out.html = Some(page.content().await?);
+            let t_html = Instant::now();
+            let html = page.content().await?;
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] content: {} bytes in {:?}",
+                html.len(),
+                t_html.elapsed()
+            );
+            out.html = Some(html);
         }
 
         if matches!(mode, CaptureMode::Png | CaptureMode::Both) {
-            let bytes = page
-                .screenshot(
-                    CaptureScreenshotParams::builder()
-                        .format(CaptureScreenshotFormat::Png)
-                        .capture_beyond_viewport(per_shot.full_page)
-                        .build(),
-                )
-                .await?;
+            let cdp_format = match per_shot.format {
+                ImageFormat::Png => CaptureScreenshotFormat::Png,
+                ImageFormat::Jpeg => CaptureScreenshotFormat::Jpeg,
+                ImageFormat::Webp => CaptureScreenshotFormat::Webp,
+            };
+            let mut builder = CaptureScreenshotParams::builder()
+                .format(cdp_format)
+                .capture_beyond_viewport(per_shot.full_page);
+            if let Some(q) = per_shot.quality {
+                builder = builder.quality(q as i64);
+            }
+            let t_shot = Instant::now();
+            let bytes = page.screenshot(builder.build()).await?;
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] screenshot: {} bytes ({:?}, format={:?})",
+                bytes.len(),
+                t_shot.elapsed(),
+                per_shot.format
+            );
             out.png = Some(bytes);
         }
 
-        out.errors = std::mem::take(&mut *errors.lock());
-
-        // Fire-and-forget close
-        let _ = page.close().await;
+        // Drain accumulated errors for this fetch.
+        out.errors = std::mem::take(&mut *guard.errors().lock());
+        if !out.errors.is_empty() {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] drained {} console errors",
+                out.errors.len()
+            );
+        }
 
         Ok::<_, BlazeError>(out)
     };
 
-    let mut result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut)
-        .await
-        .map_err(|_| BlazeError::NavigationTimeout(timeout_ms))??;
+    let fut_result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await;
+
+    // Reset the pooled page to a clean state on error. Without this, a timed-out
+    // page returns to the pool still navigating, and the NEXT URL using it
+    // races with the previous load → cascading failures.
+    let had_error = matches!(&fut_result, Err(_) | Ok(Err(_)));
+    if had_error {
+        log::debug!(
+            target: "blazeweb::engine",
+            "[{url}] error path — resetting pooled page to about:blank"
+        );
+        let reset = async {
+            let _ = page.goto("about:blank").await;
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(2), reset).await;
+    }
+
+    let mut result = fut_result
+        .map_err(|_| {
+            log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
+            BlazeError::NavigationTimeout(timeout_ms)
+        })??;
 
     result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;
+    log::debug!(
+        target: "blazeweb::engine",
+        "[{url}] complete in {:.3}s (status={}, errors={})",
+        result.elapsed_s,
+        result.status_code,
+        result.errors.len()
+    );
     Ok(result)
 }

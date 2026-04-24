@@ -16,9 +16,34 @@ use crate::error::{BlazeError, Result};
 // Top-level Client config
 // ----------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitUntil {
+    /// Resolve on Page.loadEventFired — window.onload, all subresources loaded.
+    /// Default. Matches Playwright / Puppeteer default behavior. Semantically
+    /// complete: deferred scripts have run, SPAs have hydrated, etc.
+    Load,
+    /// Resolve on Page.domContentEventFired — DOM parsed but async scripts
+    /// may still be running. Opt-in for speed on lean/static sites. Falls
+    /// through to `load` for the rare edge case where DCL doesn't fire.
+    /// Note: measurable wins are narrow — chromiumoxide's goto() already
+    /// blocks until main-doc commits, which is where most of the latency lives.
+    DomContentLoaded,
+}
+
+impl Default for WaitUntil {
+    fn default() -> Self {
+        Self::Load
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientConfigRs {
     pub concurrency: usize,
+    /// Which lifecycle event to wait for after navigation commits.
+    pub wait_until: WaitUntil,
+    /// Extra sleep after the chosen lifecycle event fires, in milliseconds.
+    /// Useful for SPAs that render content via async JS AFTER DCL / load.
+    pub wait_after_ms: u64,
     pub viewport: ViewportRs,
     pub network: NetworkRs,
     pub emulation: EmulationRs,
@@ -88,6 +113,8 @@ impl Default for ClientConfigRs {
     fn default() -> Self {
         Self {
             concurrency: 16,
+            wait_until: WaitUntil::default(),
+            wait_after_ms: 0,
             viewport: ViewportRs::default(),
             network: NetworkRs::default(),
             emulation: EmulationRs { javascript_enabled: true, ..Default::default() },
@@ -105,6 +132,23 @@ impl Default for ClientConfigRs {
 pub struct FetchConfigRs {
     pub extra_headers: HashMap<String, String>,
     pub timeout_ms: Option<u64>,
+    /// Per-call override. None = inherit client default.
+    pub wait_until: Option<WaitUntil>,
+    /// Per-call override for post-event sleep. None = inherit client default.
+    pub wait_after_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFormat {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl Default for ImageFormat {
+    fn default() -> Self {
+        Self::Png
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -113,6 +157,13 @@ pub struct ScreenshotConfigRs {
     pub full_page: bool,
     pub timeout_ms: Option<u64>,
     pub extra_headers: HashMap<String, String>,
+    pub format: ImageFormat,
+    /// 0-100, JPEG/WebP only. Ignored for PNG.
+    pub quality: Option<u32>,
+    /// Per-call override. None = inherit client default.
+    pub wait_until: Option<WaitUntil>,
+    /// Per-call override for post-event sleep. None = inherit client default.
+    pub wait_after_ms: Option<u64>,
 }
 
 // ----------------------------------------------------------------------------
@@ -126,6 +177,14 @@ pub fn parse_client_config(py_dict: &Bound<'_, PyAny>) -> Result<ClientConfigRs>
     if let Some(d) = as_dict(py_dict)? {
         if let Some(v) = d.get_item("concurrency")? {
             cfg.concurrency = v.extract().map_err(to_internal)?;
+        }
+        if let Some(v) = d.get_item("wait_until")? {
+            cfg.wait_until = parse_wait_until(&v)?;
+        }
+        if let Some(v) = d.get_item("wait_after_ms")? {
+            if !v.is_none() {
+                cfg.wait_after_ms = v.extract().map_err(to_internal)?;
+            }
         }
         if let Some(v) = d.get_item("viewport")? {
             cfg.viewport = parse_viewport(&v)?;
@@ -157,6 +216,16 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
                 cfg.timeout_ms = Some(v.extract().map_err(to_internal)?);
             }
         }
+        if let Some(v) = d.get_item("wait_until")? {
+            if !v.is_none() {
+                cfg.wait_until = Some(parse_wait_until(&v)?);
+            }
+        }
+        if let Some(v) = d.get_item("wait_after_ms")? {
+            if !v.is_none() {
+                cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
+            }
+        }
     }
     Ok(cfg)
 }
@@ -180,8 +249,49 @@ pub fn parse_screenshot_config(py_dict: &Bound<'_, PyAny>) -> Result<ScreenshotC
         if let Some(v) = d.get_item("extra_headers")? {
             cfg.extra_headers = parse_headers(&v)?;
         }
+        if let Some(v) = d.get_item("format")? {
+            if !v.is_none() {
+                let s: String = v.extract().map_err(to_internal)?;
+                cfg.format = match s.as_str() {
+                    "png" => ImageFormat::Png,
+                    "jpeg" => ImageFormat::Jpeg,
+                    "webp" => ImageFormat::Webp,
+                    other => {
+                        return Err(BlazeError::InvalidConfig(format!(
+                            "unknown image format {other:?}; expected png|jpeg|webp"
+                        )))
+                    }
+                };
+            }
+        }
+        if let Some(v) = d.get_item("quality")? {
+            if !v.is_none() {
+                cfg.quality = Some(v.extract().map_err(to_internal)?);
+            }
+        }
+        if let Some(v) = d.get_item("wait_until")? {
+            if !v.is_none() {
+                cfg.wait_until = Some(parse_wait_until(&v)?);
+            }
+        }
+        if let Some(v) = d.get_item("wait_after_ms")? {
+            if !v.is_none() {
+                cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
+            }
+        }
     }
     Ok(cfg)
+}
+
+fn parse_wait_until(v: &Bound<'_, PyAny>) -> Result<WaitUntil> {
+    let s: String = v.extract().map_err(to_internal)?;
+    match s.as_str() {
+        "domcontentloaded" | "dcl" => Ok(WaitUntil::DomContentLoaded),
+        "load" => Ok(WaitUntil::Load),
+        other => Err(BlazeError::InvalidConfig(format!(
+            "unknown wait_until {other:?}; expected 'domcontentloaded' or 'load'"
+        ))),
+    }
 }
 
 // --- helpers ---------------------------------------------------------------

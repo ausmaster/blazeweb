@@ -35,6 +35,7 @@ from blazeweb._blazeweb import (
     _FetchOutput,
     _RenderOutput,
 )
+from blazeweb._logging import configure as _configure_logging, logger, set_log_level
 from blazeweb.config import (
     ChromeConfig,
     ClientConfig,
@@ -45,6 +46,12 @@ from blazeweb.config import (
     TimeoutConfig,
     ViewportConfig,
 )
+
+# Configure Python-side logging at import from BLAZEWEB_LOG (defaults "warn").
+# The Rust side reads the same env var at PyO3 module init.
+_configure_logging()
+
+_client_log = logger.getChild("client")
 
 __all__ = [
     # Module-level convenience
@@ -66,6 +73,9 @@ __all__ = [
     "EmulationConfig",
     "TimeoutConfig",
     "ChromeConfig",
+    # Logging
+    "logger",
+    "set_log_level",
 ]
 
 
@@ -245,6 +255,12 @@ class Client:
             config = ClientConfig.from_flat(**kwargs) if kwargs else ClientConfig()
 
         self._config = config
+        _client_log.info(
+            "Client init: concurrency=%d viewport=%dx%d",
+            config.concurrency,
+            config.viewport.width,
+            config.viewport.height,
+        )
         self._rust = _RustClient(config.model_dump())
 
     # --- Config introspection + runtime update ---------------------------
@@ -336,6 +352,7 @@ class Client:
     ) -> RenderResult:
         """Fetch URL, return fully-rendered HTML post-JS."""
         fc = _merge_fetch_config(config, overrides)
+        _client_log.debug("fetch: %s", url)
         raw = self._rust.fetch(url, fc.model_dump())
         return RenderResult(
             raw.html,
@@ -353,7 +370,7 @@ class Client:
         config: ScreenshotConfig | None = None,
         **overrides: Any,
     ) -> bytes:
-        """Fetch URL, return PNG screenshot."""
+        """Fetch URL, return a screenshot as image bytes (PNG by default)."""
         if config is None and not overrides:
             sc = ScreenshotConfig()
         elif config is not None and not overrides:
@@ -361,10 +378,11 @@ class Client:
         else:
             data = config.model_dump() if config else {}
             for k, v in overrides.items():
-                if k not in {"viewport", "full_page", "timeout_ms", "extra_headers"}:
+                if k not in _SCREENSHOT_KWARGS:
                     raise TypeError(f"unknown screenshot kwarg: {k!r}")
                 data[k] = v
             sc = ScreenshotConfig.model_validate(data)
+        _client_log.debug("screenshot: %s (format=%s)", url, sc.format)
         return bytes(self._rust.screenshot(url, sc.model_dump()))
 
     def fetch_all(
@@ -373,11 +391,19 @@ class Client:
         *,
         config: FetchConfig | None = None,
         full_page: bool = False,
+        format: Literal["png", "jpeg", "webp"] = "png",
+        quality: int | None = None,
         **overrides: Any,
     ) -> FetchResult:
-        """Fetch URL, return both HTML and PNG from one page visit."""
+        """Fetch URL, return HTML + image bytes from one page visit.
+
+        ``format`` picks the image encoding; ``quality`` is 0-100 for jpeg/webp
+        (ignored for png). The encoded bytes land on ``FetchResult.png`` (field
+        name is historical — it holds whatever format you asked for).
+        """
         fc = _merge_fetch_config(config, overrides)
-        sc = ScreenshotConfig(full_page=full_page)
+        sc = ScreenshotConfig(full_page=full_page, format=format, quality=quality)
+        _client_log.debug("fetch_all: %s (format=%s)", url, format)
         raw = self._rust.fetch_all(url, fc.model_dump(), sc.model_dump())
         return FetchResult(raw)
 
@@ -396,9 +422,11 @@ class Client:
           - "both" → list[FetchResult]
         """
         fc = config or FetchConfig()
-        raws = self._rust.batch(list(urls), capture, fc.model_dump())
+        url_list = list(urls)
+        _client_log.info("batch: %d URLs, capture=%s", len(url_list), capture)
+        raws = self._rust.batch(url_list, capture, fc.model_dump())
         if capture == "html":
-            return [
+            results = [
                 RenderResult(
                     r.html,
                     errors=r.errors,
@@ -409,9 +437,12 @@ class Client:
                 )
                 for r in raws
             ]
-        if capture == "png":
-            return [bytes(b) for b in raws]
-        return [FetchResult(r) for r in raws]
+        elif capture == "png":
+            results = [bytes(b) for b in raws]
+        else:
+            results = [FetchResult(r) for r in raws]
+        _client_log.debug("batch done: %d results returned", len(results))
+        return results
 
     # --- Private / experimental -------------------------------------------
 
@@ -439,6 +470,7 @@ class Client:
     # --- Lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
+        _client_log.info("Client close")
         self._rust.close()
 
     def __enter__(self) -> Client:
@@ -478,11 +510,22 @@ def screenshot(
 
 
 def fetch_all(
-    url: str, *, config: FetchConfig | None = None, full_page: bool = False, **overrides: Any
+    url: str,
+    *,
+    config: FetchConfig | None = None,
+    full_page: bool = False,
+    format: Literal["png", "jpeg", "webp"] = "png",
+    quality: int | None = None,
+    **overrides: Any,
 ) -> FetchResult:
-    """Fetch URL → HTML + PNG. Uses a shared default Client."""
+    """Fetch URL → HTML + image bytes. Uses a shared default Client."""
     return _get_default_client().fetch_all(
-        url, config=config, full_page=full_page, **overrides
+        url,
+        config=config,
+        full_page=full_page,
+        format=format,
+        quality=quality,
+        **overrides,
     )
 
 
@@ -491,12 +534,24 @@ def fetch_all(
 # ----------------------------------------------------------------------------
 
 
+_SCREENSHOT_KWARGS = {
+    "viewport",
+    "full_page",
+    "timeout_ms",
+    "extra_headers",
+    "format",
+    "quality",
+    "wait_until",
+    "wait_after_ms",
+}
+
+
 def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> FetchConfig:
     if base is None and not overrides:
         return FetchConfig()
     data: dict[str, Any] = base.model_dump() if base else {}
     for k, v in overrides.items():
-        if k not in {"extra_headers", "timeout_ms"}:
+        if k not in {"extra_headers", "timeout_ms", "wait_until", "wait_after_ms"}:
             raise TypeError(f"unknown fetch kwarg: {k!r}")
         data[k] = v
     return FetchConfig.model_validate(data)
@@ -636,6 +691,12 @@ def _flat_kwargs_to_partial(kwargs: dict[str, Any]) -> dict[str, Any]:
             continue
         if k == "concurrency":
             out["concurrency"] = v
+            continue
+        if k == "wait_until":
+            out["wait_until"] = v
+            continue
+        if k == "wait_after_ms":
+            out["wait_after_ms"] = v
             continue
         if k not in _FLAT_KWARG_MAP:
             raise TypeError(f"unknown ClientConfig kwarg: {k!r}")

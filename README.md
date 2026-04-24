@@ -14,8 +14,9 @@ import blazeweb
 # fully rendered HTML, post-JS
 html = blazeweb.fetch("https://example.com")
 
-# PNG screenshot
+# screenshot — PNG by default; JPEG/WebP with quality
 png = blazeweb.screenshot("https://example.com")
+jpg = blazeweb.screenshot("https://example.com", format="jpeg", quality=80)
 
 # both, from a single page visit (HTML is free once you've loaded)
 both = blazeweb.fetch_all("https://example.com")
@@ -24,6 +25,16 @@ both = blazeweb.fetch_all("https://example.com")
 print(html.dom.title())              # "Example Domain"
 print(html.dom.find("h1").text)      # "Example Domain"
 print(html.dom.links())              # ["https://iana.org/domains/example"]
+```
+
+Also available as a CLI:
+
+```bash
+python -m blazeweb https://example.com                   # HTML → stdout
+python -m blazeweb https://example.com -o page.html      # → file
+python -m blazeweb https://example.com -s shot.jpg       # screenshot + HTML
+python -m blazeweb https://example.com --screenshot-only shot.webp  # image only
+python -m blazeweb https://example.com --json            # JSON w/ metadata
 ```
 
 ## Install
@@ -73,9 +84,11 @@ notebooks. For high-throughput work, instantiate your own `Client` so you
 can tune `concurrency` and re-use the warm chromium.
 
 ```python
-blazeweb.fetch(url)          # → RenderResult (a str subclass + metadata)
-blazeweb.screenshot(url)     # → PNG bytes
-blazeweb.fetch_all(url)      # → FetchResult (html + png)
+blazeweb.fetch(url)                        # → RenderResult (str subclass + metadata)
+blazeweb.screenshot(url)                   # → image bytes (PNG by default)
+blazeweb.screenshot(url, format="jpeg", quality=80)  # JPEG
+blazeweb.screenshot(url, format="webp", quality=80)  # WebP
+blazeweb.fetch_all(url)                    # → FetchResult (html + image)
 ```
 
 ### Persistent `Client` with config
@@ -180,18 +193,87 @@ r.dom.images()                         # all <img src=...>
 if r.dom.contains("Cloudflare"): ...
 ```
 
+### Navigation lifecycle — `wait_until` and `wait_after_ms`
+
+Two knobs control when a fetch returns:
+
+```python
+client = blazeweb.Client(
+    wait_until="load",        # default — window.onload (complete, Playwright-default)
+    # wait_until="domcontentloaded",  # opt-in — parser done, no subresource wait
+    wait_after_ms=0,          # additional post-event sleep in ms
+)
+
+# Per-call override
+client.fetch(url, wait_until="domcontentloaded")
+client.fetch(url, wait_after_ms=500)   # settle 500ms after load for SPA hydration
+```
+
+- `load` (default) waits for all subresources + deferred scripts; most complete.
+- `domcontentloaded` returns as soon as the DOM parser finishes — faster on
+  tracker-heavy sites but may miss post-DCL SPA mutations. In our A/B this
+  saved single-digit ms per URL on lean sites, so it's a real knob but not a
+  massive win at scale.
+- `wait_after_ms` adds a fixed sleep after the chosen event — useful for
+  React/Vue/etc. pages that hydrate post-load.
+
+### CLI — `python -m blazeweb`
+
+```
+python -m blazeweb <URL>                     # HTML → stdout
+python -m blazeweb <URL> -o out.html         # HTML → file, stdout silent
+python -m blazeweb <URL> -s shot.png         # HTML → stdout, screenshot → file
+python -m blazeweb <URL> --screenshot-only shot.jpg   # no HTML, image-only
+python -m blazeweb <URL> --json              # metadata + html as JSON
+python -m blazeweb <URL> --meta              # final_url/status → stderr
+```
+
+Image format is inferred from the output extension (`.jpg` / `.jpeg` → jpeg,
+`.webp` → webp, else png). Override with `--format png|jpeg|webp --quality N`.
+
+All the Client config knobs are available as flags: `--user-agent`,
+`--width`, `--height`, `--timeout-ms`, `--locale`, `--timezone`, `--proxy`,
+`--header K=V`, `--headers-file FILE`, `--no-js`, `--ignore-certs`, `--chrome PATH`.
+
+### Logging
+
+Both Rust and Python sides emit structured logs. Control globally via the
+`BLAZEWEB_LOG` env var (or `RUST_LOG` as fallback); runtime via
+`blazeweb.set_log_level()`:
+
+```bash
+BLAZEWEB_LOG=info  python script.py       # launch, close, batch dispatch
+BLAZEWEB_LOG=debug python script.py       # per-fetch entry/exit + timings
+BLAZEWEB_LOG=trace python script.py       # every CDP step with millisecond timing
+BLAZEWEB_LOG='blazeweb::engine=trace,warn' python script.py   # per-module
+```
+
+```python
+import blazeweb
+blazeweb.set_log_level("debug")           # Python + Rust, both sides
+blazeweb.logger.info("my app event")       # hierarchical under "blazeweb.*"
+```
+
+Bare levels auto-narrow to `blazeweb` only — you won't drown in
+tungstenite/hyper chatter when you set `BLAZEWEB_LOG=debug`.
+
 ## Configuration reference
 
 Every knob lives under a nested sub-config. Flat kwargs on `Client(...)` and
 `ClientConfig.from_flat(...)` map to the corresponding nested field.
 
-| Sub-config     | Fields                                                                              |
+| Section        | Fields                                                                              |
 |----------------|-------------------------------------------------------------------------------------|
+| (top level)    | `concurrency`, `wait_until`, `wait_after_ms`                                         |
 | `viewport`     | `width`, `height`, `device_scale_factor`, `mobile`                                  |
 | `network`      | `user_agent`, `proxy`, `extra_headers`, `ignore_https_errors`, `block_urls`, `disable_cache`, `offline`, `latency_ms`, `download_bps`, `upload_bps` |
 | `emulation`    | `locale`, `timezone`, `geolocation`, `prefers_color_scheme`, `javascript_enabled`   |
 | `timeout`      | `navigation_ms`, `launch_ms`, `screenshot_ms`                                        |
 | `chrome`       | `path`, `args`, `user_data_dir`, `headless`                                          |
+
+Per-call overrides (on `FetchConfig` / `ScreenshotConfig`): `extra_headers`,
+`timeout_ms`, `wait_until`, `wait_after_ms`. `ScreenshotConfig` also takes
+`viewport`, `full_page`, `format`, `quality`.
 
 **Env vars**: set via `BLAZEWEB_` prefix + `__` delimiter for nesting.
 `BLAZEWEB_CONCURRENCY=32`, `BLAZEWEB_VIEWPORT__WIDTH=1920`,
