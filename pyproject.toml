@@ -12,7 +12,11 @@ dependencies = [
     "pydantic-settings>=2.0",
 ]
 
-[project.optional-dependencies]
+[project.scripts]
+blazeweb = "blazeweb.__main__:main"
+blazeweb-download-chrome = "blazeweb._download_chrome:main"
+
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-httpserver>=1.1",
@@ -22,6 +26,15 @@ dev = [
 bench = [
     "pytest>=8",
     "playwright>=1.49",
+]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "rust-toolchain.toml" },
+    { file = "src/**/*.rs" },
 ]
 
 [tool.ruff]
@@ -53,6 +66,7 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not benchmark'"
 markers = [
     "benchmark: performance regression tests",
     "real_sites: gauntlet tests against real production websites",

@@ -73,7 +73,7 @@ want hundreds of URLs per minute from a single process.
 | Chromium headless (CLI fork-per-URL)              | P=16          | 4.51    |
 | Servo 0.1.0 in-process                            | P=8           | 1.13    |
 
-Full methodology + breakdown in ``experiments/BENCHMARKS.md``.
+Full methodology + breakdown in ``BENCHMARKS.md``.
 
 ## The core API
 
@@ -293,24 +293,42 @@ Per-call overrides (on `FetchConfig` / `ScreenshotConfig`): `extra_headers`,
 
 ## Development
 
+Prerequisites: [`uv`](https://docs.astral.sh/uv/) and a stable Rust toolchain
+(`rustup` recommended — `rust-toolchain.toml` pins the channel). Python is
+auto-managed by `uv` via `.python-version` (3.11).
+
 ```bash
-# Install dev deps
-uv pip install -e '.[dev,bench]'
+# One-shot env setup: creates .venv, installs deps, builds the Rust extension
+# in editable mode. Safe to re-run — incremental.
+uv sync
 
-# Build (incremental; full build ~2 min cold)
-maturin develop --uv
+# Fetch chrome-headless-shell for this platform (~100 MB, one-time)
+uv run blazeweb-download-chrome
 
-# Run tests
-uv run pytest tests/ -v
+# Run things — no venv activation needed
+uv run blazeweb https://example.com              # the CLI
+uv run pytest                                    # test suite
+uv run ruff check .                              # lint
+uv run mypy python/blazeweb                      # typecheck
 
-# Refresh the bundled Chrome binary for this platform
-python scripts/download-chrome.py              # current platform only
-python scripts/download-chrome.py --all        # every supported platform (for wheel builds)
-python scripts/download-chrome.py --force      # re-download even if present
+# Benchmarks — gauntlet lives in tests/ as `@pytest.mark.benchmark`, skipped
+# by default. Run it with -m benchmark -s (no output capture so the per-phase
+# timing tables print live).
+uv run pytest -m benchmark -s
 
-# Build a wheel
-maturin build --release
+# Cross-tool comparison benchmarks (pulls Playwright + its Chromium)
+uv sync --group bench
+uv run playwright install chromium
+
+# Build a release wheel (bundles chrome-headless-shell for all target platforms)
+uv run blazeweb-download-chrome --all
+uv build
 ```
+
+Rust edits to `src/*.rs` trigger a rebuild on the next `uv sync` / `uv run`
+automatically — no manual `maturin develop` needed. This is driven by
+`[tool.uv] cache-keys` in `pyproject.toml`, which tracks `Cargo.toml`,
+`Cargo.lock`, `rust-toolchain.toml`, and `src/**/*.rs`.
 
 Supported platforms for the bundled binary: linux-x86_64, linux-aarch64,
 darwin-x86_64, darwin-aarch64, windows-x86_64. (v2.0 ships linux-x86_64;

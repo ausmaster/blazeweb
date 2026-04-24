@@ -30,6 +30,6 @@ dist/
 # Dev-only — CLAUDE.md is local notes
 CLAUDE.md
 
-# Bundled chromium binaries — populated at wheel build time (scripts/download-chrome.py).
+# Bundled chromium binaries — populated at wheel build time (`uv run blazeweb-download-chrome`).
 # Not committed to git (too large); maturin `include` picks them up from disk.
 python/blazeweb/_binaries/

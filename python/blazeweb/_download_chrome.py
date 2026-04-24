@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
 """Download a pinned ``chrome-headless-shell`` binary into
-``python/blazeweb/_binaries/<platform>/`` so ``maturin build`` can include it
-in the wheel.
+``python/blazeweb/_binaries/<platform>/`` so ``uv build`` / ``maturin build``
+can include it in the wheel.
 
-Usage:
-    python scripts/download-chrome.py              # current platform
-    python scripts/download-chrome.py --all        # every supported platform
-    python scripts/download-chrome.py --force      # re-download even if present
+Exposed as the ``blazeweb-download-chrome`` console script:
+
+    uv run blazeweb-download-chrome              # current platform
+    uv run blazeweb-download-chrome --all        # every supported platform
+    uv run blazeweb-download-chrome --force      # re-download even if present
 
 Idempotent: skips if the binary is already present and non-empty.
 Versions are pinned here — bump ``CHROME_VERSION`` to upgrade the bundled
@@ -144,8 +144,7 @@ def download_for(
 
 
 def main() -> int:
-    repo_root = Path(__file__).resolve().parent.parent
-    default_dest = repo_root / "python" / "blazeweb" / "_binaries"
+    default_dest = Path(__file__).resolve().parent / "_binaries"
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
