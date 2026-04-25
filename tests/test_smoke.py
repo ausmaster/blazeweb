@@ -10,20 +10,20 @@ URL = "https://example.com"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def test_module_fetch():
+def test_module_fetch() -> None:
     r = blazeweb.fetch(URL)
     assert isinstance(r, blazeweb.RenderResult)
     assert "Example Domain" in r
 
 
-def test_module_screenshot():
+def test_module_screenshot() -> None:
     png = blazeweb.screenshot(URL)
     assert isinstance(png, bytes)
     assert png.startswith(PNG_MAGIC)
     assert len(png) > 1000  # tiny sanity: real image, not just header
 
 
-def test_module_fetch_all():
+def test_module_fetch_all() -> None:
     fr = blazeweb.fetch_all(URL)
     assert isinstance(fr, blazeweb.FetchResult)
     assert isinstance(fr.html, blazeweb.RenderResult)
@@ -32,7 +32,7 @@ def test_module_fetch_all():
     assert fr.html.dom.title() == "Example Domain"
 
 
-def test_client_context_manager_closes_cleanly():
+def test_client_context_manager_closes_cleanly() -> None:
     """Using Client as context manager runs close() on exit — no dangling chrome."""
     with blazeweb.Client() as c:
         r = c.fetch(URL)
@@ -42,7 +42,7 @@ def test_client_context_manager_closes_cleanly():
         c.fetch(URL)
 
 
-def test_multiple_clients_coexist():
+def test_multiple_clients_coexist() -> None:
     """Two Clients run simultaneously — each owns its own chromium process."""
     with blazeweb.Client() as a, blazeweb.Client() as b:
         ra = a.fetch(URL)

@@ -23,7 +23,7 @@ URLS = [
 
 
 @pytest.mark.parametrize("threads,concurrency", [(1, 1), (4, 4), (8, 8), (16, 4)])
-def test_concurrent_fetches_complete(threads: int, concurrency: int):
+def test_concurrent_fetches_complete(threads: int, concurrency: int) -> None:
     """N threads × N URLs all return valid RenderResult. No crashes, no empties."""
     work = URLS * (threads * 2)  # more work than threads
     with (
@@ -37,7 +37,7 @@ def test_concurrent_fetches_complete(threads: int, concurrency: int):
         assert len(r) > 0
 
 
-def test_threading_faster_than_serial():
+def test_threading_faster_than_serial() -> None:
     """With concurrency=8 and 8 threads, 16 URLs should complete materially
     faster than 16 × single-URL-wall would suggest — the threading works
     only if the GIL is actually released."""
@@ -55,13 +55,14 @@ def test_threading_faster_than_serial():
     assert parallel_wall < 15.0, f"parallel wall {parallel_wall:.2f}s suggests GIL holding"
 
 
-def test_one_client_shared_across_threads_survives_errors():
+def test_one_client_shared_across_threads_survives_errors() -> None:
     """If one thread's fetch raises, other threads continue fine."""
     mixed = URLS + ["not-a-url"] + URLS
+    Outcome = blazeweb.RenderResult | Exception
     with blazeweb.Client(concurrency=4) as client:
-        results: list[tuple[str, object]] = []
+        results: list[tuple[str, Outcome]] = []
 
-        def work(u: str):
+        def work(u: str) -> tuple[str, Outcome]:
             try:
                 return u, client.fetch(u)
             except Exception as e:

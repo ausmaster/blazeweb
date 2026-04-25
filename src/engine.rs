@@ -89,7 +89,8 @@ pub async fn capture_page(
                 serde_json::to_value(&headers_map)
                     .map_err(|e| BlazeError::Internal(e.to_string()))?,
             );
-            page.execute(SetExtraHttpHeadersParams::new(headers)).await?;
+            page.execute(SetExtraHttpHeadersParams::new(headers))
+                .await?;
         }
 
         // Subscribe BEFORE goto (race-free). goto returns on navigate ack
@@ -223,17 +224,16 @@ pub async fn capture_page(
     // a half-loaded predecessor.
     if matches!(&fut_result, Err(_) | Ok(Err(_))) {
         log::debug!(target: "blazeweb::engine", "[{url}] error — reset to about:blank");
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            async { let _ = page.goto("about:blank").await; },
-        ).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            let _ = page.goto("about:blank").await;
+        })
+        .await;
     }
 
-    let mut result = fut_result
-        .map_err(|_| {
-            log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
-            BlazeError::NavigationTimeout(timeout_ms)
-        })??;
+    let mut result = fut_result.map_err(|_| {
+        log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
+        BlazeError::NavigationTimeout(timeout_ms)
+    })??;
 
     result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;
     log::debug!(

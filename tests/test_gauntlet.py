@@ -25,10 +25,10 @@ import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import pytest
+from typing import Literal
 
 import blazeweb
+import pytest
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.real_sites]
 
@@ -40,7 +40,7 @@ PYTHON_THREADS = int(os.environ.get("BLAZEWEB_GAUNTLET_THREADS", "32"))
 NAV_TIMEOUT_MS = int(os.environ.get("BLAZEWEB_NAV_TIMEOUT_MS", "10000"))
 
 
-def _classify(r) -> str:
+def _classify(r: blazeweb.RenderResult | blazeweb.FetchResult) -> str:
     """ok = real 2xx/3xx response; http4xx = got bytes but error status; fail = nav dead."""
     if not r.status_code:
         return "fail"
@@ -49,10 +49,16 @@ def _classify(r) -> str:
     return "ok"
 
 
-def _count_ok(results, capture: str) -> int:
+def _count_ok(
+    results: list[blazeweb.RenderResult | blazeweb.FetchResult | bytes],
+    capture: str,
+) -> int:
     if capture == "png":
-        return sum(1 for b in results if b)
-    return sum(1 for r in results if _classify(r) == "ok")
+        return sum(1 for b in results if isinstance(b, bytes) and b)
+    return sum(
+        1 for r in results
+        if not isinstance(r, bytes) and _classify(r) == "ok"
+    )
 
 
 def _banner(msg: str) -> None:
@@ -97,7 +103,10 @@ def clean_urls(raw_urls: list[str]) -> list[str]:
             t = time.perf_counter()
             results = client.batch(uniq, capture="html")
             elapsed = time.perf_counter() - t
-            bad = {url for url, r in zip(uniq, results, strict=True) if _classify(r) != "ok"}
+            bad = {
+                url for url, r in zip(uniq, results, strict=True)
+                if not isinstance(r, bytes) and _classify(r) != "ok"
+            }
             survivors -= bad
             print(
                 f"  pass {pass_n}: {len(uniq) - len(bad)}/{len(uniq)} ok in {elapsed:.1f}s "
@@ -205,7 +214,11 @@ def test_python_threads_drive(clean_urls: list[str], best_concurrency: int) -> N
 
 
 @pytest.mark.parametrize("capture", ["html", "both"])
-def test_max_throughput(clean_urls: list[str], best_concurrency: int, capture: str) -> None:
+def test_max_throughput(
+    clean_urls: list[str],
+    best_concurrency: int,
+    capture: Literal["html", "both"],
+) -> None:
     """Headline number — a big run at the winning concurrency."""
     urls = _expand(clean_urls, BIG_URL_COUNT)
     _banner(
@@ -220,14 +233,16 @@ def test_max_throughput(clean_urls: list[str], best_concurrency: int, capture: s
     rate = len(urls) / elapsed
     buckets = {"ok": 0, "fail": 0, "http4xx": 0}
     for r in results:
-        buckets[_classify(r)] += 1
+        if not isinstance(r, bytes):
+            buckets[_classify(r)] += 1
     print(
         f"  ★ {rate:.2f} URL/s   "
         f"{buckets['ok']} ok / {buckets['http4xx']} 4xx / {buckets['fail']} fail   "
         f"wall {elapsed:.1f}s"
     )
     if capture == "both":
-        html_mb = sum(len(r.html) for r in results) / 1e6
-        png_mb = sum(len(r.png) for r in results) / 1e6
+        fetches = [r for r in results if isinstance(r, blazeweb.FetchResult)]
+        html_mb = sum(len(r.html) for r in fetches) / 1e6
+        png_mb = sum(len(r.png) for r in fetches) / 1e6
         print(f"  payload: {html_mb:.1f} MB html + {png_mb:.1f} MB png")
     assert rate > 0

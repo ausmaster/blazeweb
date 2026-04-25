@@ -14,7 +14,7 @@ URLS = [
 
 
 class TestBatchHtml:
-    def test_returns_render_results(self):
+    def test_returns_render_results(self) -> None:
         with blazeweb.Client(concurrency=4) as c:
             results = c.batch(URLS, capture="html")
         assert len(results) == len(URLS)
@@ -24,7 +24,7 @@ class TestBatchHtml:
 
 
 class TestBatchPng:
-    def test_returns_bytes(self):
+    def test_returns_bytes(self) -> None:
         with blazeweb.Client(concurrency=4) as c:
             results = c.batch(URLS, capture="png")
         assert len(results) == len(URLS)
@@ -34,7 +34,7 @@ class TestBatchPng:
 
 
 class TestBatchBoth:
-    def test_returns_fetch_results(self):
+    def test_returns_fetch_results(self) -> None:
         with blazeweb.Client(concurrency=4) as c:
             results = c.batch(URLS, capture="both")
         assert len(results) == len(URLS)
@@ -45,14 +45,14 @@ class TestBatchBoth:
 
 
 class TestBatchEmpty:
-    def test_empty_urls_returns_empty_list(self):
+    def test_empty_urls_returns_empty_list(self) -> None:
         with blazeweb.Client() as c:
             results = c.batch([], capture="html")
         assert results == []
 
 
 class TestBatchInvalidCapture:
-    def test_bad_capture_mode_raises(self):
+    def test_bad_capture_mode_raises(self) -> None:
         with blazeweb.Client() as c, pytest.raises(ValueError, match="capture must"):
             c.batch(["https://example.com"], capture="invalid")  # type: ignore[arg-type]
 
@@ -60,14 +60,16 @@ class TestBatchInvalidCapture:
 class TestBatchAcceptsIterables:
     """batch() should accept any iterable of URLs, not only lists."""
 
-    def test_generator_works(self):
-        def gen():
+    def test_generator_works(self) -> None:
+        from collections.abc import Iterator
+
+        def gen() -> Iterator[str]:
             yield from URLS
         with blazeweb.Client() as c:
             results = c.batch(gen(), capture="html")
         assert len(results) == len(URLS)
 
-    def test_tuple_works(self):
+    def test_tuple_works(self) -> None:
         with blazeweb.Client() as c:
             results = c.batch(tuple(URLS), capture="html")
         assert len(results) == len(URLS)

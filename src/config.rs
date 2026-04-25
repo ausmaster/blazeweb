@@ -16,11 +16,12 @@ use crate::error::{BlazeError, Result};
 // Top-level Client config
 // ----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WaitUntil {
     /// Resolve on Page.loadEventFired — window.onload, all subresources loaded.
     /// Default. Matches Playwright / Puppeteer default behavior. Semantically
     /// complete: deferred scripts have run, SPAs have hydrated, etc.
+    #[default]
     Load,
     /// Resolve on Page.domContentEventFired — DOM parsed but async scripts
     /// may still be running. Opt-in for speed on lean/static sites. Falls
@@ -28,12 +29,6 @@ pub enum WaitUntil {
     /// Note: measurable wins are narrow — chromiumoxide's goto() already
     /// blocks until main-doc commits, which is where most of the latency lives.
     DomContentLoaded,
-}
-
-impl Default for WaitUntil {
-    fn default() -> Self {
-        Self::Load
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,13 +133,22 @@ pub struct ChromeRs {
 
 impl Default for ViewportRs {
     fn default() -> Self {
-        Self { width: 1200, height: 800, device_scale_factor: 1.0, mobile: false }
+        Self {
+            width: 1200,
+            height: 800,
+            device_scale_factor: 1.0,
+            mobile: false,
+        }
     }
 }
 
 impl Default for TimeoutRs {
     fn default() -> Self {
-        Self { navigation_ms: 30_000, launch_ms: 15_000, screenshot_ms: 5_000 }
+        Self {
+            navigation_ms: 30_000,
+            launch_ms: 15_000,
+            screenshot_ms: 5_000,
+        }
     }
 }
 
@@ -156,10 +160,16 @@ impl Default for ClientConfigRs {
             wait_after_ms: 0,
             viewport: ViewportRs::default(),
             network: NetworkRs::default(),
-            emulation: EmulationRs { javascript_enabled: true, ..Default::default() },
+            emulation: EmulationRs {
+                javascript_enabled: true,
+                ..Default::default()
+            },
             scripts: ScriptsRs::default(),
             timeout: TimeoutRs::default(),
-            chrome: ChromeRs { headless: true, ..Default::default() },
+            chrome: ChromeRs {
+                headless: true,
+                ..Default::default()
+            },
         }
     }
 }
@@ -178,17 +188,12 @@ pub struct FetchConfigRs {
     pub wait_after_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImageFormat {
+    #[default]
     Png,
     Jpeg,
     Webp,
-}
-
-impl Default for ImageFormat {
-    fn default() -> Self {
-        Self::Png
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -221,10 +226,10 @@ pub fn parse_client_config(py_dict: &Bound<'_, PyAny>) -> Result<ClientConfigRs>
         if let Some(v) = d.get_item("wait_until")? {
             cfg.wait_until = parse_wait_until(&v)?;
         }
-        if let Some(v) = d.get_item("wait_after_ms")? {
-            if !v.is_none() {
-                cfg.wait_after_ms = v.extract().map_err(to_internal)?;
-            }
+        if let Some(v) = d.get_item("wait_after_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_ms = v.extract().map_err(to_internal)?;
         }
         if let Some(v) = d.get_item("viewport")? {
             cfg.viewport = parse_viewport(&v)?;
@@ -254,20 +259,20 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
         if let Some(v) = d.get_item("extra_headers")? {
             cfg.extra_headers = parse_headers(&v)?;
         }
-        if let Some(v) = d.get_item("timeout_ms")? {
-            if !v.is_none() {
-                cfg.timeout_ms = Some(v.extract().map_err(to_internal)?);
-            }
+        if let Some(v) = d.get_item("timeout_ms")?
+            && !v.is_none()
+        {
+            cfg.timeout_ms = Some(v.extract().map_err(to_internal)?);
         }
-        if let Some(v) = d.get_item("wait_until")? {
-            if !v.is_none() {
-                cfg.wait_until = Some(parse_wait_until(&v)?);
-            }
+        if let Some(v) = d.get_item("wait_until")?
+            && !v.is_none()
+        {
+            cfg.wait_until = Some(parse_wait_until(&v)?);
         }
-        if let Some(v) = d.get_item("wait_after_ms")? {
-            if !v.is_none() {
-                cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
-            }
+        if let Some(v) = d.get_item("wait_after_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
         }
     }
     Ok(cfg)
@@ -276,51 +281,51 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
 pub fn parse_screenshot_config(py_dict: &Bound<'_, PyAny>) -> Result<ScreenshotConfigRs> {
     let mut cfg = ScreenshotConfigRs::default();
     if let Some(d) = as_dict(py_dict)? {
-        if let Some(v) = d.get_item("viewport")? {
-            if !v.is_none() {
-                cfg.viewport = Some(parse_pair(&v)?);
-            }
+        if let Some(v) = d.get_item("viewport")?
+            && !v.is_none()
+        {
+            cfg.viewport = Some(parse_pair(&v)?);
         }
         if let Some(v) = d.get_item("full_page")? {
             cfg.full_page = v.extract().map_err(to_internal)?;
         }
-        if let Some(v) = d.get_item("timeout_ms")? {
-            if !v.is_none() {
-                cfg.timeout_ms = Some(v.extract().map_err(to_internal)?);
-            }
+        if let Some(v) = d.get_item("timeout_ms")?
+            && !v.is_none()
+        {
+            cfg.timeout_ms = Some(v.extract().map_err(to_internal)?);
         }
         if let Some(v) = d.get_item("extra_headers")? {
             cfg.extra_headers = parse_headers(&v)?;
         }
-        if let Some(v) = d.get_item("format")? {
-            if !v.is_none() {
-                let s: String = v.extract().map_err(to_internal)?;
-                cfg.format = match s.as_str() {
-                    "png" => ImageFormat::Png,
-                    "jpeg" => ImageFormat::Jpeg,
-                    "webp" => ImageFormat::Webp,
-                    other => {
-                        return Err(BlazeError::InvalidConfig(format!(
-                            "unknown image format {other:?}; expected png|jpeg|webp"
-                        )))
-                    }
-                };
-            }
+        if let Some(v) = d.get_item("format")?
+            && !v.is_none()
+        {
+            let s: String = v.extract().map_err(to_internal)?;
+            cfg.format = match s.as_str() {
+                "png" => ImageFormat::Png,
+                "jpeg" => ImageFormat::Jpeg,
+                "webp" => ImageFormat::Webp,
+                other => {
+                    return Err(BlazeError::InvalidConfig(format!(
+                        "unknown image format {other:?}; expected png|jpeg|webp"
+                    )));
+                }
+            };
         }
-        if let Some(v) = d.get_item("quality")? {
-            if !v.is_none() {
-                cfg.quality = Some(v.extract().map_err(to_internal)?);
-            }
+        if let Some(v) = d.get_item("quality")?
+            && !v.is_none()
+        {
+            cfg.quality = Some(v.extract().map_err(to_internal)?);
         }
-        if let Some(v) = d.get_item("wait_until")? {
-            if !v.is_none() {
-                cfg.wait_until = Some(parse_wait_until(&v)?);
-            }
+        if let Some(v) = d.get_item("wait_until")?
+            && !v.is_none()
+        {
+            cfg.wait_until = Some(parse_wait_until(&v)?);
         }
-        if let Some(v) = d.get_item("wait_after_ms")? {
-            if !v.is_none() {
-                cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
-            }
+        if let Some(v) = d.get_item("wait_after_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
         }
     }
     Ok(cfg)
@@ -355,12 +360,18 @@ fn to_internal(e: PyErr) -> BlazeError {
 fn parse_viewport(v: &Bound<'_, PyAny>) -> Result<ViewportRs> {
     let mut out = ViewportRs::default();
     if let Some(d) = as_dict(v)? {
-        if let Some(x) = d.get_item("width")? { out.width = x.extract().map_err(to_internal)?; }
-        if let Some(x) = d.get_item("height")? { out.height = x.extract().map_err(to_internal)?; }
+        if let Some(x) = d.get_item("width")? {
+            out.width = x.extract().map_err(to_internal)?;
+        }
+        if let Some(x) = d.get_item("height")? {
+            out.height = x.extract().map_err(to_internal)?;
+        }
         if let Some(x) = d.get_item("device_scale_factor")? {
             out.device_scale_factor = x.extract().map_err(to_internal)?;
         }
-        if let Some(x) = d.get_item("mobile")? { out.mobile = x.extract().map_err(to_internal)?; }
+        if let Some(x) = d.get_item("mobile")? {
+            out.mobile = x.extract().map_err(to_internal)?;
+        }
     }
     Ok(out)
 }
@@ -368,16 +379,20 @@ fn parse_viewport(v: &Bound<'_, PyAny>) -> Result<ViewportRs> {
 fn parse_network(v: &Bound<'_, PyAny>) -> Result<NetworkRs> {
     let mut out = NetworkRs::default();
     if let Some(d) = as_dict(v)? {
-        if let Some(x) = d.get_item("user_agent")? {
-            if !x.is_none() { out.user_agent = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("user_agent")?
+            && !x.is_none()
+        {
+            out.user_agent = Some(x.extract().map_err(to_internal)?);
         }
-        if let Some(x) = d.get_item("user_agent_metadata")? {
-            if !x.is_none() {
-                out.user_agent_metadata = Some(parse_user_agent_metadata(&x)?);
-            }
+        if let Some(x) = d.get_item("user_agent_metadata")?
+            && !x.is_none()
+        {
+            out.user_agent_metadata = Some(parse_user_agent_metadata(&x)?);
         }
-        if let Some(x) = d.get_item("proxy")? {
-            if !x.is_none() { out.proxy = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("proxy")?
+            && !x.is_none()
+        {
+            out.proxy = Some(x.extract().map_err(to_internal)?);
         }
         if let Some(x) = d.get_item("extra_headers")? {
             out.extra_headers = parse_headers(&x)?;
@@ -394,35 +409,50 @@ fn parse_network(v: &Bound<'_, PyAny>) -> Result<NetworkRs> {
         if let Some(x) = d.get_item("offline")? {
             out.offline = x.extract().map_err(to_internal)?;
         }
-        if let Some(x) = d.get_item("latency_ms")? {
-            if !x.is_none() { out.latency_ms = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("latency_ms")?
+            && !x.is_none()
+        {
+            out.latency_ms = Some(x.extract().map_err(to_internal)?);
         }
-        if let Some(x) = d.get_item("download_bps")? {
-            if !x.is_none() { out.download_bps = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("download_bps")?
+            && !x.is_none()
+        {
+            out.download_bps = Some(x.extract().map_err(to_internal)?);
         }
-        if let Some(x) = d.get_item("upload_bps")? {
-            if !x.is_none() { out.upload_bps = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("upload_bps")?
+            && !x.is_none()
+        {
+            out.upload_bps = Some(x.extract().map_err(to_internal)?);
         }
     }
     Ok(out)
 }
 
 fn parse_emulation(v: &Bound<'_, PyAny>) -> Result<EmulationRs> {
-    let mut out = EmulationRs { javascript_enabled: true, ..Default::default() };
+    let mut out = EmulationRs {
+        javascript_enabled: true,
+        ..Default::default()
+    };
     if let Some(d) = as_dict(v)? {
-        if let Some(x) = d.get_item("locale")? {
-            if !x.is_none() { out.locale = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("locale")?
+            && !x.is_none()
+        {
+            out.locale = Some(x.extract().map_err(to_internal)?);
         }
-        if let Some(x) = d.get_item("timezone")? {
-            if !x.is_none() { out.timezone = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("timezone")?
+            && !x.is_none()
+        {
+            out.timezone = Some(x.extract().map_err(to_internal)?);
         }
-        if let Some(x) = d.get_item("geolocation")? {
-            if !x.is_none() { out.geolocation = Some(parse_pair_f64(&x)?); }
+        if let Some(x) = d.get_item("geolocation")?
+            && !x.is_none()
+        {
+            out.geolocation = Some(parse_pair_f64(&x)?);
         }
-        if let Some(x) = d.get_item("prefers_color_scheme")? {
-            if !x.is_none() {
-                out.prefers_color_scheme = Some(x.extract().map_err(to_internal)?);
-            }
+        if let Some(x) = d.get_item("prefers_color_scheme")?
+            && !x.is_none()
+        {
+            out.prefers_color_scheme = Some(x.extract().map_err(to_internal)?);
         }
         if let Some(x) = d.get_item("javascript_enabled")? {
             out.javascript_enabled = x.extract().map_err(to_internal)?;
@@ -448,18 +478,23 @@ fn parse_timeout(v: &Bound<'_, PyAny>) -> Result<TimeoutRs> {
 }
 
 fn parse_chrome(v: &Bound<'_, PyAny>) -> Result<ChromeRs> {
-    let mut out = ChromeRs { headless: true, ..Default::default() };
+    let mut out = ChromeRs {
+        headless: true,
+        ..Default::default()
+    };
     if let Some(d) = as_dict(v)? {
-        if let Some(x) = d.get_item("path")? {
-            if !x.is_none() { out.path = Some(x.extract().map_err(to_internal)?); }
+        if let Some(x) = d.get_item("path")?
+            && !x.is_none()
+        {
+            out.path = Some(x.extract().map_err(to_internal)?);
         }
         if let Some(x) = d.get_item("args")? {
             out.args = parse_str_list(&x)?;
         }
-        if let Some(x) = d.get_item("user_data_dir")? {
-            if !x.is_none() {
-                out.user_data_dir = Some(x.extract().map_err(to_internal)?);
-            }
+        if let Some(x) = d.get_item("user_data_dir")?
+            && !x.is_none()
+        {
+            out.user_data_dir = Some(x.extract().map_err(to_internal)?);
         }
         if let Some(x) = d.get_item("headless")? {
             out.headless = x.extract().map_err(to_internal)?;
@@ -489,22 +524,32 @@ fn parse_brand_list(v: &Bound<'_, PyAny>) -> Result<Vec<UserAgentBrandVersionRs>
     let lst = v.downcast::<PyList>().map_err(|_| {
         BlazeError::InvalidConfig("brands must be list of {brand,version} dicts".to_string())
     })?;
-    lst.iter().map(|item| parse_user_agent_brand_version(&item)).collect()
+    lst.iter()
+        .map(|item| parse_user_agent_brand_version(&item))
+        .collect()
 }
 
 fn parse_user_agent_metadata(v: &Bound<'_, PyAny>) -> Result<UserAgentMetadataRs> {
-    let d = v.downcast::<PyDict>().map_err(|_| {
-        BlazeError::InvalidConfig("user_agent_metadata must be dict".to_string())
-    })?;
+    let d = v
+        .downcast::<PyDict>()
+        .map_err(|_| BlazeError::InvalidConfig("user_agent_metadata must be dict".to_string()))?;
 
     let brands = if let Some(x) = d.get_item("brands")? {
-        if x.is_none() { None } else { Some(parse_brand_list(&x)?) }
+        if x.is_none() {
+            None
+        } else {
+            Some(parse_brand_list(&x)?)
+        }
     } else {
         None
     };
 
     let full_version_list = if let Some(x) = d.get_item("full_version_list")? {
-        if x.is_none() { None } else { Some(parse_brand_list(&x)?) }
+        if x.is_none() {
+            None
+        } else {
+            Some(parse_brand_list(&x)?)
+        }
     } else {
         None
     };
@@ -525,12 +570,18 @@ fn parse_user_agent_metadata(v: &Bound<'_, PyAny>) -> Result<UserAgentMetadataRs
 
     let mobile: bool = d
         .get_item("mobile")?
-        .ok_or_else(|| BlazeError::InvalidConfig("user_agent_metadata missing 'mobile'".to_string()))?
+        .ok_or_else(|| {
+            BlazeError::InvalidConfig("user_agent_metadata missing 'mobile'".to_string())
+        })?
         .extract()
         .map_err(to_internal)?;
 
     let bitness = if let Some(x) = d.get_item("bitness")? {
-        if x.is_none() { None } else { Some(x.extract::<String>().map_err(to_internal)?) }
+        if x.is_none() {
+            None
+        } else {
+            Some(x.extract::<String>().map_err(to_internal)?)
+        }
     } else {
         None
     };
@@ -541,7 +592,11 @@ fn parse_user_agent_metadata(v: &Bound<'_, PyAny>) -> Result<UserAgentMetadataRs
     };
 
     let form_factors = if let Some(x) = d.get_item("form_factors")? {
-        if x.is_none() { None } else { Some(parse_str_list(&x)?) }
+        if x.is_none() {
+            None
+        } else {
+            Some(parse_str_list(&x)?)
+        }
     } else {
         None
     };
@@ -586,9 +641,9 @@ fn parse_url_scoped(v: &Bound<'_, PyAny>) -> Result<HashMap<String, Vec<String>>
     if v.is_none() {
         return Ok(HashMap::new());
     }
-    let d = v.downcast::<PyDict>().map_err(|_| {
-        BlazeError::InvalidConfig("url_scoped must be dict".to_string())
-    })?;
+    let d = v
+        .downcast::<PyDict>()
+        .map_err(|_| BlazeError::InvalidConfig("url_scoped must be dict".to_string()))?;
     let mut out = HashMap::with_capacity(d.len());
     for (k, val) in d.iter() {
         let key: String = k.extract().map_err(to_internal)?;
@@ -602,9 +657,9 @@ fn parse_headers(v: &Bound<'_, PyAny>) -> Result<HashMap<String, String>> {
     if v.is_none() {
         return Ok(HashMap::new());
     }
-    let d = v.downcast::<PyDict>().map_err(|_| {
-        BlazeError::InvalidConfig("extra_headers must be dict".to_string())
-    })?;
+    let d = v
+        .downcast::<PyDict>()
+        .map_err(|_| BlazeError::InvalidConfig("extra_headers must be dict".to_string()))?;
     let mut out = HashMap::with_capacity(d.len());
     for (k, val) in d.iter() {
         let key: String = k.extract().map_err(to_internal)?;
@@ -615,35 +670,57 @@ fn parse_headers(v: &Bound<'_, PyAny>) -> Result<HashMap<String, String>> {
 }
 
 fn parse_str_list(v: &Bound<'_, PyAny>) -> Result<Vec<String>> {
-    if v.is_none() { return Ok(Vec::new()); }
-    let lst = v.downcast::<PyList>().map_err(|_| {
-        BlazeError::InvalidConfig("expected list of strings".to_string())
-    })?;
+    if v.is_none() {
+        return Ok(Vec::new());
+    }
+    let lst = v
+        .downcast::<PyList>()
+        .map_err(|_| BlazeError::InvalidConfig("expected list of strings".to_string()))?;
     lst.iter()
         .map(|item| item.extract::<String>().map_err(to_internal))
         .collect()
 }
 
 fn parse_pair(v: &Bound<'_, PyAny>) -> Result<(u32, u32)> {
-    let tuple = v.downcast::<PyTuple>().map_err(|_| {
-        BlazeError::InvalidConfig("expected (w, h) tuple".to_string())
-    })?;
+    let tuple = v
+        .downcast::<PyTuple>()
+        .map_err(|_| BlazeError::InvalidConfig("expected (w, h) tuple".to_string()))?;
     if tuple.len() != 2 {
-        return Err(BlazeError::InvalidConfig("tuple must be length 2".to_string()));
+        return Err(BlazeError::InvalidConfig(
+            "tuple must be length 2".to_string(),
+        ));
     }
-    let w: u32 = tuple.get_item(0).map_err(to_internal)?.extract().map_err(to_internal)?;
-    let h: u32 = tuple.get_item(1).map_err(to_internal)?.extract().map_err(to_internal)?;
+    let w: u32 = tuple
+        .get_item(0)
+        .map_err(to_internal)?
+        .extract()
+        .map_err(to_internal)?;
+    let h: u32 = tuple
+        .get_item(1)
+        .map_err(to_internal)?
+        .extract()
+        .map_err(to_internal)?;
     Ok((w, h))
 }
 
 fn parse_pair_f64(v: &Bound<'_, PyAny>) -> Result<(f64, f64)> {
-    let tuple = v.downcast::<PyTuple>().map_err(|_| {
-        BlazeError::InvalidConfig("expected (a, b) tuple".to_string())
-    })?;
+    let tuple = v
+        .downcast::<PyTuple>()
+        .map_err(|_| BlazeError::InvalidConfig("expected (a, b) tuple".to_string()))?;
     if tuple.len() != 2 {
-        return Err(BlazeError::InvalidConfig("tuple must be length 2".to_string()));
+        return Err(BlazeError::InvalidConfig(
+            "tuple must be length 2".to_string(),
+        ));
     }
-    let a: f64 = tuple.get_item(0).map_err(to_internal)?.extract().map_err(to_internal)?;
-    let b: f64 = tuple.get_item(1).map_err(to_internal)?.extract().map_err(to_internal)?;
+    let a: f64 = tuple
+        .get_item(0)
+        .map_err(to_internal)?
+        .extract()
+        .map_err(to_internal)?;
+    let b: f64 = tuple
+        .get_item(1)
+        .map_err(to_internal)?
+        .extract()
+        .map_err(to_internal)?;
     Ok((a, b))
 }

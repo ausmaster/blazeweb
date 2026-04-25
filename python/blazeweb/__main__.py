@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Literal, cast
+from typing import IO, Any, Literal, cast
 
 import blazeweb
 
@@ -147,7 +147,7 @@ def _read_headers_file(path: Path) -> dict[str, str]:
     return out
 
 
-def _resolve_preset(name: str) -> dict:
+def _resolve_preset(name: str) -> dict[str, Any]:
     """Look up a preset by dotted name (e.g., ``stealth.BASIC``)."""
     from blazeweb import presets
 
@@ -171,9 +171,12 @@ def _resolve_preset(name: str) -> dict:
     return preset
 
 
-def _list_presets(stream=sys.stdout) -> None:
-    """Print available presets (every uppercase ``dict`` attribute across
-    the submodules under ``blazeweb.presets``)."""
+def _list_presets(stream: IO[str] = sys.stdout) -> None:
+    """Print available presets to ``stream``.
+
+    Lists every uppercase ``dict`` attribute across the submodules under
+    ``blazeweb.presets``.
+    """
     from blazeweb import presets
 
     stream.write("Available presets (use --preset <module>.<NAME>):\n")
@@ -191,9 +194,9 @@ def _list_presets(stream=sys.stdout) -> None:
                 stream.write(f"  {module_name}.{attr}\n")
 
 
-def _build_client_kwargs(args: argparse.Namespace) -> dict:
+def _build_client_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     # Start with the preset (if any) so explicit CLI flags can override below.
-    kwargs: dict = dict(_resolve_preset(args.preset)) if args.preset else {}
+    kwargs: dict[str, Any] = dict(_resolve_preset(args.preset)) if args.preset else {}
 
     # Overlay explicit CLI flags. Sentinel-None semantics on the overlapping
     # flags (viewport, timeout) so preset values flow through unchanged when
@@ -232,7 +235,9 @@ def _build_client_kwargs(args: argparse.Namespace) -> dict:
     return kwargs
 
 
-def _emit_meta(html_result, stream=sys.stderr) -> None:
+def _emit_meta(
+    html_result: blazeweb.RenderResult, stream: IO[str] = sys.stderr
+) -> None:
     stream.write(
         f"final_url={html_result.final_url}  "
         f"status={html_result.status_code}  "
@@ -242,6 +247,12 @@ def _emit_meta(html_result, stream=sys.stderr) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for ``python -m blazeweb`` / ``blazeweb``.
+
+    Parses ``argv`` (default ``sys.argv[1:]``), runs the requested action
+    (fetch / screenshot / install / etc.), and returns a process exit code:
+    0 success, 1 bad arg, 2 fetch error.
+    """
     p = _build_parser()
     args = p.parse_args(argv)
 

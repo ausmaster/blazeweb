@@ -14,10 +14,10 @@ use pyo3::types::{PyBytes, PyList};
 
 use crate::chrome;
 use crate::config::{
-    parse_client_config, parse_fetch_config, parse_screenshot_config, ClientConfigRs,
-    FetchConfigRs, ScreenshotConfigRs,
+    ClientConfigRs, FetchConfigRs, ScreenshotConfigRs, parse_client_config, parse_fetch_config,
+    parse_screenshot_config,
 };
-use crate::engine::{capture_page, CaptureMode};
+use crate::engine::{CaptureMode, capture_page};
 use crate::error::{BlazeError, Result};
 use crate::pool::PagePool;
 use crate::result::{RawFetchOutput, RawRenderOutput};
@@ -64,8 +64,7 @@ impl Client {
     #[new]
     fn new(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<Self> {
         let config_rs = parse_client_config(config).map_err(PyErr::from)?;
-        let chrome_path = chrome::resolve(config_rs.chrome.path.as_deref())
-            .map_err(PyErr::from)?;
+        let chrome_path = chrome::resolve(config_rs.chrome.path.as_deref()).map_err(PyErr::from)?;
         let chrome_display = chrome_path.display().to_string();
 
         let runtime = runtime::shared();
@@ -138,19 +137,17 @@ impl Client {
         let (browser, handler_task, pool) = py
             .allow_threads(|| {
                 runtime.block_on(async {
-                    let (browser, mut handler) = Browser::launch(cfg)
-                        .await
-                        .map_err(BlazeError::from)?;
+                    let (browser, mut handler) =
+                        Browser::launch(cfg).await.map_err(BlazeError::from)?;
                     let task = tokio::spawn(async move {
                         while let Some(res) = handler.next().await {
-                            if let Err(_) = res {
+                            if res.is_err() {
                                 // Handler ended — browser will report errors on the next page op.
                                 break;
                             }
                         }
                     });
-                    let pool =
-                        PagePool::new(&browser, concurrency, &config_for_pool).await?;
+                    let pool = PagePool::new(&browser, concurrency, &config_for_pool).await?;
                     Ok::<_, BlazeError>((browser, task, pool))
                 })
             })
@@ -165,7 +162,9 @@ impl Client {
             closed: std::sync::atomic::AtomicBool::new(false),
         };
 
-        Ok(Self { inner: Arc::new(state) })
+        Ok(Self {
+            inner: Arc::new(state),
+        })
     }
 
     /// Swap in a new config. Launch-only fields (chrome.*, concurrency, proxy,
@@ -315,7 +314,7 @@ impl Client {
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "capture must be 'html'|'png'|'both', got {other:?}"
-                )))
+                )));
             }
         };
         let fetch_cfg = parse_fetch_config(per_call).map_err(PyErr::from)?;
@@ -323,15 +322,14 @@ impl Client {
         let runtime = state.runtime.clone();
 
         #[allow(clippy::type_complexity)]
-        let outputs: Vec<std::result::Result<crate::engine::CaptureOutput, BlazeError>> =
-            py.allow_threads(move || {
+        let outputs: Vec<std::result::Result<crate::engine::CaptureOutput, BlazeError>> = py
+            .allow_threads(move || {
                 runtime.block_on(async move {
                     let shot_cfg = ScreenshotConfigRs::default();
                     // Snapshot config ONCE for the whole batch — in-batch updates don't re-apply.
                     let base_cfg = state.config.read().clone();
                     let tasks: Vec<_> = urls
-                        .iter()
-                        .cloned()
+                        .into_iter()
                         .map(|url| {
                             let pool = state.pool.clone();
                             let base = base_cfg.clone();
@@ -435,7 +433,10 @@ impl Client {
             runtime.block_on(async move {
                 // Close pooled pages before the browser goes away.
                 state.pool.close_all().await;
-                if let Some(task) = state.handler_task.lock().take() {
+                // Drop the MutexGuard before any await — the take() detaches
+                // the JoinHandle so we can join it without holding the lock.
+                let task_opt = state.handler_task.lock().take();
+                if let Some(task) = task_opt {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), task).await;
                 }
             });

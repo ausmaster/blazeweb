@@ -17,7 +17,9 @@ Usage::
 
 from __future__ import annotations
 
-FULL_PAGE: dict = {
+from typing import Any
+
+FULL_PAGE: dict[str, Any] = {
     "viewport": (1920, 1080),
     "navigation_timeout_ms": 30_000,
     "wait_until": "load",

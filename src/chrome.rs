@@ -108,9 +108,8 @@ fn find_bundled() -> Option<PathBuf> {
 }
 
 fn which_on_path(name: &str) -> Result<PathBuf> {
-    let path = std::env::var("PATH").map_err(|_| {
-        BlazeError::ChromeNotFound("PATH env not set".to_string())
-    })?;
+    let path = std::env::var("PATH")
+        .map_err(|_| BlazeError::ChromeNotFound("PATH env not set".to_string()))?;
     for dir in path.split(':') {
         if dir.is_empty() {
             continue;

@@ -20,6 +20,12 @@ What it does NOT fix (out of scope):
   Turnstile in particular runs in a cross-origin iframe.
 * Service-worker / shared-worker scope — CDP does not inject into workers.
 * Behavioral simulation — mouse/scroll/keyboard timing is not simulated.
+* ``navigator.plugins instanceof PluginArray`` — the patch returns a plain
+  ``Array``; detectors that check the prototype chain catch this.
+* Patched-accessor ``toString()`` source — real Chrome accessors stringify
+  to ``function get foo() { [native code] }``. Our arrow getters
+  (e.g. ``() => undefined`` for ``webdriver``) are detectable via
+  ``Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver').get.toString()``.
 
 Usage::
 
@@ -32,24 +38,26 @@ Usage::
 
 from __future__ import annotations
 
-# Linux x86_64, Chrome 131 — matches the OS on which chrome-headless-shell
-# runs locally, and so stays consistent with the TLS fingerprint. Bump this
-# string alongside CHROME_VERSION in _download_chrome.py when the bundled
-# Chrome major version moves.
+from typing import Any
+
+# Linux x86_64, Chrome 148 — matches the bundled chrome-headless-shell
+# (CHROME_VERSION in _download_chrome.py) so JS-feature shape and the UA
+# string don't disagree. Bump this in lockstep when CHROME_VERSION moves;
+# `test_basic_ua_major_matches_chrome_version` guards the major.
 BASIC_UA: str = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 )
 
-BASIC_UA_METADATA: dict = {
+BASIC_UA_METADATA: dict[str, Any] = {
     "brands": [
-        {"brand": "Google Chrome", "version": "131"},
-        {"brand": "Chromium", "version": "131"},
+        {"brand": "Google Chrome", "version": "148"},
+        {"brand": "Chromium", "version": "148"},
         {"brand": "Not_A Brand", "version": "24"},
     ],
     "full_version_list": [
-        {"brand": "Google Chrome", "version": "131.0.6778.69"},
-        {"brand": "Chromium", "version": "131.0.6778.69"},
+        {"brand": "Google Chrome", "version": "148.0.7778.56"},
+        {"brand": "Chromium", "version": "148.0.7778.56"},
         {"brand": "Not_A Brand", "version": "24.0.0.0"},
     ],
     "platform": "Linux",
@@ -185,28 +193,31 @@ _PATCH_WEBGL = """\
 """
 
 _PATCH_CANVAS_NOISE = """\
-/* Canvas fingerprint — headless Chrome's canvas renders are bit-identical
-   across sessions (deterministic software rasterizer); real hardware varies
-   subtly due to GPU drivers. Anti-bot scripts hash toDataURL() output. We
-   perturb a small fraction of pixels' alpha channel by +/-1 so the hash
-   differs per session while the visual is preserved. */
+/* Canvas fingerprint — perturb a fraction of alpha-channel pixels per
+   session so toDataURL hashes differ. We render onto a clone canvas and
+   serialize THAT, leaving the source canvas untouched (pages that reuse
+   the canvas later see their original pixels). */
 (() => {
   const sessionSeed = Math.floor(Math.random() * 1e9);
   const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
   HTMLCanvasElement.prototype.toDataURL = function() {
     try {
-      const ctx = this.getContext('2d');
       const w = this.width, h = this.height;
-      if (ctx && w > 0 && h > 0) {
-        const imageData = ctx.getImageData(0, 0, w, h);
+      if (w > 0 && h > 0) {
+        const tmp = document.createElement('canvas');
+        tmp.width = w; tmp.height = h;
+        const tctx = tmp.getContext('2d');
+        tctx.drawImage(this, 0, 0);
+        const imageData = tctx.getImageData(0, 0, w, h);
         const d = imageData.data;
         const step = Math.max(4, Math.floor(d.length / 400) * 4);
         for (let i = 3; i < d.length; i += step) {
           d[i] = Math.max(0, Math.min(255, d[i] + ((sessionSeed + i) % 3) - 1));
         }
-        ctx.putImageData(imageData, 0, 0);
+        tctx.putImageData(imageData, 0, 0);
+        return origToDataURL.apply(tmp, arguments);
       }
-    } catch (e) { /* non-2d canvas, CORS-tainted, etc. — fall through */ }
+    } catch (e) { /* CORS-tainted, etc. — fall through to passthrough */ }
     return origToDataURL.apply(this, arguments);
   };
 })();
@@ -228,13 +239,13 @@ FINGERPRINT_PATCHES: list[str] = [
 ]
 
 
-BASIC: dict = {
+BASIC: dict[str, Any] = {
     "user_agent": BASIC_UA,
     "user_agent_metadata": BASIC_UA_METADATA,
     "scripts": {"on_new_document": BASIC_PATCHES},
 }
 
-FINGERPRINT: dict = {
+FINGERPRINT: dict[str, Any] = {
     "user_agent": BASIC_UA,
     "user_agent_metadata": BASIC_UA_METADATA,
     "scripts": {"on_new_document": FINGERPRINT_PATCHES},

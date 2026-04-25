@@ -2,13 +2,15 @@
 //! descriptive string. No custom Python exception hierarchy in v2.0 — easy to
 //! add later if users ask.
 
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::PyErr;
+use pyo3::exceptions::PyRuntimeError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum BlazeError {
-    #[error("chrome binary not found — pass chrome_path=, set BLAZEWEB_CHROME, or install chromium ({0})")]
+    #[error(
+        "chrome binary not found — pass chrome_path=, set BLAZEWEB_CHROME, or install chromium ({0})"
+    )]
     ChromeNotFound(String),
 
     #[error("browser launch failed: {0}")]

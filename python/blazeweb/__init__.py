@@ -33,19 +33,12 @@ from pydantic import BaseModel as _BaseModel
 
 from blazeweb._blazeweb import (
     Client as _RustClient,
-)
-from blazeweb._blazeweb import (
     Dom as Dom,
-)
-from blazeweb._blazeweb import (
     Element as Element,
-)
-from blazeweb._blazeweb import (
     _FetchOutput,
     _RenderOutput,
 )
-from blazeweb._logging import configure as _configure_logging
-from blazeweb._logging import logger, set_log_level
+from blazeweb._logging import configure as _configure_logging, logger, set_log_level
 from blazeweb.config import (
     ChromeConfig,
     ClientConfig,
@@ -134,6 +127,7 @@ class RenderResult(str):
         elapsed_s: float = 0.0,
         _raw: _RenderOutput | None = None,
     ) -> RenderResult:
+        """Construct a RenderResult; ``_raw`` is internal (Rust output object)."""
         instance = super().__new__(cls, html)
         instance.errors = errors or []
         instance.final_url = final_url
@@ -145,6 +139,7 @@ class RenderResult(str):
 
     @property
     def html(self) -> str:
+        """The raw rendered HTML as a plain ``str`` (same as ``str(self)``)."""
         return str(self)
 
     @property
@@ -194,19 +189,24 @@ class FetchResult:
 
     @property
     def errors(self) -> list[str]:
-        return self._raw.errors
+        """Console errors and load errors collected during the page visit."""
+        # _FetchOutput is a Rust pyclass; mypy can't see its attribute types.
+        return self._raw.errors  # type: ignore[no-any-return]
 
     @property
     def final_url(self) -> str:
-        return self._raw.final_url
+        """URL the browser ended up at, after any redirects."""
+        return self._raw.final_url  # type: ignore[no-any-return]
 
     @property
     def status_code(self) -> int:
-        return self._raw.status_code
+        """Final HTTP status code of the main document response."""
+        return self._raw.status_code  # type: ignore[no-any-return]
 
     @property
     def elapsed_s(self) -> float:
-        return self._raw.elapsed_s
+        """End-to-end page-visit time in seconds."""
+        return self._raw.elapsed_s  # type: ignore[no-any-return]
 
     def __repr__(self) -> str:
         return (
@@ -247,6 +247,7 @@ _LAUNCH_ONLY_FIELDS: tuple[tuple[str, ...], ...] = (
 
 class Client:
     """Long-lived chromium connection backed by a pre-warmed page pool.
+
     Thread-safe — N Python threads may call ``fetch()``/``screenshot()``/
     ``batch()`` concurrently, capped by ``concurrency``.
     """
@@ -283,9 +284,11 @@ class Client:
 
     @property
     def config(self) -> _ConfigView:
-        """Live-mutable config view. ``client.config.network.user_agent = "X"``
-        at any depth auto-syncs to Rust. Launch-only fields raise ``ValueError``
-        at the assignment line. Call ``.snapshot()`` for a detached deep-copy.
+        """Live-mutable config view.
+
+        ``client.config.network.user_agent = "X"`` at any depth auto-syncs to
+        Rust. Launch-only fields raise ``ValueError`` at the assignment line.
+        Call ``.snapshot()`` for a detached deep-copy.
         """
         return _ConfigView(self, ())
 
@@ -295,10 +298,12 @@ class Client:
         config: ClientConfig | None = None,
         **kwargs: Any,
     ) -> None:
-        """Swap in new config (takes effect on next fetch). Pass either
-        ``config=ClientConfig(...)`` OR flat kwargs. In-flight calls snapshot
-        at start so won't see a torn state. Raises ``ValueError`` on any
-        launch-only field change (see ``_LAUNCH_ONLY_FIELDS``).
+        """Swap in new config (takes effect on next fetch).
+
+        Pass either ``config=ClientConfig(...)`` OR flat kwargs. In-flight
+        calls snapshot at start so won't see a torn state. Raises
+        ``ValueError`` on any launch-only field change (see
+        ``_LAUNCH_ONLY_FIELDS``).
         """
         if args:
             raise TypeError("update_config() takes only keyword args")
@@ -464,6 +469,7 @@ class Client:
     # --- Lifecycle ---------------------------------------------------------
 
     def close(self) -> None:
+        """Tear down the chromium process and free pool resources."""
         _client_log.info("Client close")
         self._rust.close()
 
@@ -557,9 +563,11 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
 
 
 class _ConfigView:
-    """Live proxy over a Client's config — reads delegate to the pydantic
-    model; writes route through ``Client._apply_config`` to keep Rust in sync.
-    Only ``_client`` / ``_path`` live on instances (``__slots__``).
+    """Live proxy over a Client's config.
+
+    Reads delegate to the pydantic model; writes route through
+    ``Client._apply_config`` to keep Rust in sync. Only ``_client`` / ``_path``
+    live on instances (``__slots__``).
     """
 
     __slots__ = ("_client", "_path")
@@ -609,10 +617,11 @@ class _ConfigView:
         return self._target().model_copy(deep=True)
 
     def model_dump(self, **kw: Any) -> dict[str, Any]:
-        return self._target().model_dump(**kw)
+        # _target() returns the live pydantic model whose typing varies by depth.
+        return self._target().model_dump(**kw)  # type: ignore[no-any-return]
 
     def model_dump_json(self, **kw: Any) -> str:
-        return self._target().model_dump_json(**kw)
+        return self._target().model_dump_json(**kw)  # type: ignore[no-any-return]
 
 
 # update_config / Client(**kwargs) build a SPARSE partial dict (unlike
@@ -652,9 +661,11 @@ _FLAT_KWARG_MAP: dict[str, tuple[str, ...]] = {
 
 
 def _flat_kwargs_to_partial(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Translate flat kwargs into a sparse nested dict. Only mentioned fields
-    appear in the output; defaults are NOT filled in. Meant for merging onto
-    an existing config."""
+    """Translate flat kwargs into a sparse nested dict.
+
+    Only mentioned fields appear in the output; defaults are NOT filled in.
+    Meant for merging onto an existing config.
+    """
     out: dict[str, Any] = {}
     for k, v in kwargs.items():
         if k == "viewport":

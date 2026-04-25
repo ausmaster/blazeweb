@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import blazeweb
 import pytest
 from blazeweb import ClientConfig, NetworkConfig, ViewportConfig
@@ -10,31 +12,31 @@ from blazeweb import ClientConfig, NetworkConfig, ViewportConfig
 class TestLiveSetattr:
     """c.config.x.y = val writes through to the Rust engine atomically."""
 
-    def test_nested_setattr_updates_config(self):
+    def test_nested_setattr_updates_config(self) -> None:
         with blazeweb.Client(user_agent="v1") as c:
             c.config.network.user_agent = "v2"
             assert c.config.network.user_agent == "v2"
 
-    def test_multiple_setattr_same_path_accumulate(self):
+    def test_multiple_setattr_same_path_accumulate(self) -> None:
         with blazeweb.Client() as c:
             c.config.emulation.locale = "ja-JP"
             c.config.emulation.timezone = "Asia/Tokyo"
             assert c.config.emulation.locale == "ja-JP"
             assert c.config.emulation.timezone == "Asia/Tokyo"
 
-    def test_viewport_setattr(self):
+    def test_viewport_setattr(self) -> None:
         with blazeweb.Client() as c:
             c.config.viewport.width = 1920
             c.config.viewport.height = 1080
             assert c.config.viewport.width == 1920
             assert c.config.viewport.height == 1080
 
-    def test_reading_unchanged_fields_stays_stable(self):
+    def test_reading_unchanged_fields_stays_stable(self) -> None:
         with blazeweb.Client(concurrency=4) as c:
             c.config.network.user_agent = "updated"
             assert c.config.concurrency == 4  # unchanged
 
-    def test_scripts_on_new_document_setattr(self):
+    def test_scripts_on_new_document_setattr(self) -> None:
         """Live-assigning scripts writes through to Rust.
 
         NOTE: Per docs, this only affects *future* pool pages. Existing pooled
@@ -46,7 +48,7 @@ class TestLiveSetattr:
             c.config.scripts.on_new_document = ["console.log('x')"]
             assert c.config.scripts.on_new_document == ["console.log('x')"]
 
-    def test_user_agent_metadata_setattr(self):
+    def test_user_agent_metadata_setattr(self) -> None:
         with blazeweb.Client() as c:
             c.config.network.user_agent_metadata = {
                 "platform": "Linux",
@@ -73,7 +75,9 @@ class TestLaunchOnlyRejection:
             lambda c: setattr(c.config.timeout, "launch_ms", 99999),
         ],
     )
-    def test_launch_only_field_rejected(self, assign):
+    def test_launch_only_field_rejected(
+        self, assign: Callable[[blazeweb.Client], None]
+    ) -> None:
         with blazeweb.Client() as c, pytest.raises(ValueError, match="launch-only"):
             assign(c)
 
@@ -81,7 +85,7 @@ class TestLaunchOnlyRejection:
 class TestSnapshotIsDetached:
     """snapshot() gives a deep copy — mutations don't leak to the Client."""
 
-    def test_snapshot_mutation_does_not_propagate(self):
+    def test_snapshot_mutation_does_not_propagate(self) -> None:
         with blazeweb.Client(user_agent="original") as c:
             snap = c.config.snapshot()
             assert isinstance(snap, ClientConfig)
@@ -89,7 +93,7 @@ class TestSnapshotIsDetached:
             # Client's actual config unchanged
             assert c.config.network.user_agent == "original"
 
-    def test_sub_snapshot(self):
+    def test_sub_snapshot(self) -> None:
         with blazeweb.Client(user_agent="original") as c:
             net_snap = c.config.network.snapshot()
             # It's the sub-config type
@@ -101,13 +105,13 @@ class TestSnapshotIsDetached:
 class TestUpdateConfigAPI:
     """Client.update_config() is still available for bulk / programmatic updates."""
 
-    def test_kwargs_merge(self):
+    def test_kwargs_merge(self) -> None:
         with blazeweb.Client() as c:
             c.update_config(user_agent="kwUA", locale="en-GB")
             assert c.config.network.user_agent == "kwUA"
             assert c.config.emulation.locale == "en-GB"
 
-    def test_full_replace(self):
+    def test_full_replace(self) -> None:
         with blazeweb.Client() as c:
             new = ClientConfig(
                 concurrency=c.config.concurrency,  # must match launch-only
@@ -116,26 +120,26 @@ class TestUpdateConfigAPI:
             c.update_config(config=new)
             assert c.config.viewport.width == 2560
 
-    def test_both_raises(self):
+    def test_both_raises(self) -> None:
         with blazeweb.Client() as c, pytest.raises(TypeError):
             c.update_config(config=ClientConfig(), user_agent="x")
 
-    def test_positional_raises(self):
+    def test_positional_raises(self) -> None:
         with blazeweb.Client() as c, pytest.raises(TypeError):
-            c.update_config("positional")  # type: ignore[arg-type]
+            c.update_config("positional")
 
 
 class TestForwardedMethods:
     """c.config forwards common pydantic methods so users can serialize etc."""
 
-    def test_model_dump(self):
+    def test_model_dump(self) -> None:
         with blazeweb.Client() as c:
             d = c.config.model_dump()
             assert isinstance(d, dict)
             assert "concurrency" in d
             assert "network" in d
 
-    def test_model_dump_json(self):
+    def test_model_dump_json(self) -> None:
         with blazeweb.Client() as c:
             s = c.config.model_dump_json()
             assert isinstance(s, str)

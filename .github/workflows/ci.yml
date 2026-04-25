@@ -18,6 +18,24 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    # Static gates: ruff, mypy strict, cargo fmt, cargo clippy. Fast — runs
+    # on every PR / push to master alongside the wheel-build matrix.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Sync dev deps (builds Rust ext via cache-keys)
+        run: uv sync --group dev
+      - name: Ruff
+        run: uv run ruff check python/ tests/
+      - name: Mypy (strict)
+        run: uv run mypy python/blazeweb/ tests/
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
   linux:
     runs-on: ubuntu-22.04
     strategy:

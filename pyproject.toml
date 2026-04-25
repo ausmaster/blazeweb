@@ -42,12 +42,36 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "D"]
+ignore = [
+    # Google-convention conflicts with these pydocstyle defaults:
+    "D203", # one-blank-line-before-class — google prefers D211
+    "D213", # multi-line-summary-second-line — google prefers D212
+    # __init__ args go in the class docstring under Google convention.
+    "D107",
+    # Magic methods (__repr__ etc.) don't need explicit docstrings.
+    "D105",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests get assert-style summaries; not full Google blocks.
+"tests/*" = ["D"]
+# Private modules: relax requirement on per-symbol docstrings.
+"python/blazeweb/_logging.py" = ["D102", "D103", "D107"]
+"python/blazeweb/_download_chrome.py" = ["D103"]
+
+[tool.ruff.lint.isort]
+# Coalesce `from X import a as b, c as d` onto one block — keeps PEP 484
+# explicit re-exports (`Dom as Dom`) compact and matches our import style:
+# single block per module, multi-line when ≥5 symbols.
+combine-as-imports = true
 
 [tool.mypy]
 python_version = "3.11"
-check_untyped_defs = true
-warn_unused_ignores = true
+strict = true
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
 

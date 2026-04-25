@@ -57,7 +57,7 @@ fn _set_rust_log_level(level: &str) -> PyResult<()> {
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "invalid log level {other:?}; expected trace|debug|info|warn|error|off"
-            )))
+            )));
         }
     };
     log::set_max_level(filter);

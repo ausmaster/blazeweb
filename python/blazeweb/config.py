@@ -28,8 +28,10 @@ class ViewportConfig(BaseModel):
 
 
 class UserAgentBrandVersion(BaseModel):
-    """One entry in the ``Sec-CH-UA`` brand list. Matches CDP's
-    ``Emulation.UserAgentBrandVersion``."""
+    """One entry in the ``Sec-CH-UA`` brand list.
+
+    Matches CDP's ``Emulation.UserAgentBrandVersion``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -38,9 +40,10 @@ class UserAgentBrandVersion(BaseModel):
 
 
 class UserAgentMetadata(BaseModel):
-    """Structured client-hint metadata. Matches CDP's
-    ``Emulation.UserAgentMetadata`` shape (sent via
-    ``Network.setUserAgentOverride`` alongside the plain UA header).
+    """Structured client-hint metadata.
+
+    Matches CDP's ``Emulation.UserAgentMetadata`` shape, sent via
+    ``Network.setUserAgentOverride`` alongside the plain UA header.
 
     Must be consistent with ``NetworkConfig.user_agent`` — a UA string that
     says Chrome 131 on Windows paired with ``brands=[{brand:"Firefox",…}]``
@@ -245,8 +248,11 @@ class ClientConfig(BaseSettings):
 
     @classmethod
     def from_flat(cls, **kwargs: Any) -> ClientConfig:
-        """Build a ClientConfig from flat kwargs. Powers the
-        ``Client(viewport=(w,h), user_agent=..., concurrency=16)`` shortcut."""
+        """Build a ClientConfig from flat kwargs.
+
+        Powers the ``Client(viewport=(w,h), user_agent=..., concurrency=16)``
+        shortcut.
+        """
         # Maps flat kwarg → (sub_config_name, field_name).
         flat_map: dict[str, tuple[str, str]] = {
             "device_scale_factor": ("viewport", "device_scale_factor"),

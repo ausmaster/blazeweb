@@ -16,7 +16,9 @@ Usage::
 
 from __future__ import annotations
 
-FAST: dict = {
+from typing import Any
+
+FAST: dict[str, Any] = {
     "javascript_enabled": False,
     "navigation_timeout_ms": 5_000,
     "block_urls": [

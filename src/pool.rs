@@ -9,9 +9,14 @@ use chromiumoxide::cdp::browser_protocol::emulation::{
     SetScriptExecutionDisabledParams, SetTimezoneOverrideParams, UserAgentBrandVersion,
     UserAgentMetadata,
 };
+// EmulateNetworkConditionsParams is deprecated upstream in chromiumoxide
+// 0.9 (CDP renamed it). The replacement isn't yet exported; allow the
+// deprecation until the upstream type lands.
+#[allow(deprecated)]
+use chromiumoxide::cdp::browser_protocol::network::EmulateNetworkConditionsParams;
 use chromiumoxide::cdp::browser_protocol::network::{
-    BlockPattern, EmulateNetworkConditionsParams, SetBlockedUrLsParams, SetCacheDisabledParams,
-    SetExtraHttpHeadersParams, SetUserAgentOverrideParams,
+    BlockPattern, SetBlockedUrLsParams, SetCacheDisabledParams, SetExtraHttpHeadersParams,
+    SetUserAgentOverrideParams,
 };
 use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
 use chromiumoxide::{Browser, Page};
@@ -132,7 +137,12 @@ impl PageGuard {
 
     /// Latest main-doc response status. None if no response has arrived yet.
     pub fn main_status(&self) -> Option<u16> {
-        *self.page.as_ref().expect("guard drained").main_status.lock()
+        *self
+            .page
+            .as_ref()
+            .expect("guard drained")
+            .main_status
+            .lock()
     }
 }
 
@@ -183,7 +193,8 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             serde_json::to_value(&base.network.extra_headers)
                 .map_err(|e| BlazeError::Internal(e.to_string()))?,
         );
-        page.execute(SetExtraHttpHeadersParams::new(headers)).await?;
+        page.execute(SetExtraHttpHeadersParams::new(headers))
+            .await?;
     }
 
     if !base.network.block_urls.is_empty() {
@@ -214,6 +225,7 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
         || base.network.download_bps.is_some()
         || base.network.upload_bps.is_some()
     {
+        #[allow(deprecated)]
         page.execute(
             EmulateNetworkConditionsParams::builder()
                 .offline(base.network.offline)
@@ -268,9 +280,7 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
     let main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
     {
         use chromiumoxide::cdp::browser_protocol::log::EventEntryAdded;
-        use chromiumoxide::cdp::browser_protocol::network::{
-            EventResponseReceived, ResourceType,
-        };
+        use chromiumoxide::cdp::browser_protocol::network::{EventResponseReceived, ResourceType};
         use chromiumoxide::cdp::js_protocol::runtime::EventExceptionThrown;
 
         let errors_cl = errors.clone();
@@ -324,7 +334,11 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
         });
     }
 
-    Ok(PooledPage { page, errors, main_status })
+    Ok(PooledPage {
+        page,
+        errors,
+        main_status,
+    })
 }
 
 /// Build a chromiumoxide ``UserAgentMetadata`` from our parsed config mirror.
@@ -337,7 +351,10 @@ fn build_ua_metadata(m: &UserAgentMetadataRs) -> Result<UserAgentMetadata> {
         .mobile(m.mobile);
     if let Some(brands) = &m.brands {
         for br in brands {
-            b = b.brand(UserAgentBrandVersion::new(br.brand.clone(), br.version.clone()));
+            b = b.brand(UserAgentBrandVersion::new(
+                br.brand.clone(),
+                br.version.clone(),
+            ));
         }
     }
     if let Some(fvl) = &m.full_version_list {
@@ -382,16 +399,14 @@ async fn register_init_scripts(page: &Page, base: &ClientConfigRs) -> Result<()>
     }
 
     for src in &s.on_dom_content_loaded {
-        let wrapped = format!(
-            "document.addEventListener('DOMContentLoaded', function() {{ {src} }});"
-        );
+        let wrapped =
+            format!("document.addEventListener('DOMContentLoaded', function() {{ {src} }});");
         page.execute(AddScriptToEvaluateOnNewDocumentParams::new(wrapped))
             .await?;
     }
 
     for src in &s.on_load {
-        let wrapped =
-            format!("window.addEventListener('load', function() {{ {src} }});");
+        let wrapped = format!("window.addEventListener('load', function() {{ {src} }});");
         page.execute(AddScriptToEvaluateOnNewDocumentParams::new(wrapped))
             .await?;
     }
@@ -410,9 +425,7 @@ async fn register_init_scripts(page: &Page, base: &ClientConfigRs) -> Result<()>
     for (pattern, scripts) in &s.url_scoped {
         let pat_esc = js_escape_single_quoted(pattern);
         for src in scripts {
-            let wrapped = format!(
-                "if (location.href.indexOf('{pat_esc}') !== -1) {{ {src} }}"
-            );
+            let wrapped = format!("if (location.href.indexOf('{pat_esc}') !== -1) {{ {src} }}");
             page.execute(AddScriptToEvaluateOnNewDocumentParams::new(wrapped))
                 .await?;
         }

@@ -60,9 +60,7 @@ impl Dom {
     /// Run a CSS selector; return list of matching Elements.
     fn query(&self, selector: &str) -> PyResult<Vec<Element>> {
         let sel = parse_selector(selector)?;
-        Ok(self.with_parsed(|h| {
-            h.select(&sel).map(Element::from_ref).collect()
-        }))
+        Ok(self.with_parsed(|h| h.select(&sel).map(Element::from_ref).collect()))
     }
 
     /// First match, or None.
@@ -241,11 +239,11 @@ impl Element {
         // Parse the outer HTML to extract attrs — we stored outer so we can regenerate.
         // A fragment parse is cheap for a single element's HTML.
         let fragment = Html::parse_fragment(&self.outer_html_for_reparse);
-        if let Some(first) = fragment.root_element().children().next() {
-            if let Some(el) = ElementRef::wrap(first) {
-                for (k, v) in el.value().attrs() {
-                    d.set_item(k, v)?;
-                }
+        if let Some(first) = fragment.root_element().children().next()
+            && let Some(el) = ElementRef::wrap(first)
+        {
+            for (k, v) in el.value().attrs() {
+                d.set_item(k, v)?;
             }
         }
         Ok(d)
@@ -313,8 +311,9 @@ impl Element {
 // ----------------------------------------------------------------------------
 
 fn parse_selector(s: &str) -> PyResult<Selector> {
-    Selector::parse(s)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("bad CSS selector {s:?}: {e:?}")))
+    Selector::parse(s).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("bad CSS selector {s:?}: {e:?}"))
+    })
 }
 
 fn collect_text(e: ElementRef<'_>) -> String {

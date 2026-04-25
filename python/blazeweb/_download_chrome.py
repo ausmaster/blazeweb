@@ -1,8 +1,10 @@
-"""Download a pinned ``chrome-headless-shell`` binary into
-``python/blazeweb/_binaries/<platform>/`` so ``uv build`` / ``maturin build``
-can include it in the wheel.
+"""Pinned ``chrome-headless-shell`` downloader.
 
-Exposed as the ``blazeweb-download-chrome`` console script:
+Fetches the binary into ``python/blazeweb/_binaries/<platform>/`` for
+``uv build`` / ``maturin build`` to optionally include it. Also drives
+``blazeweb --install`` (post-install user setup).
+
+Exposed as the ``blazeweb-download-chrome`` console script::
 
     uv run blazeweb-download-chrome              # current platform
     uv run blazeweb-download-chrome --all        # every supported platform
@@ -71,6 +73,7 @@ def download_for(
     verbose: bool = True,
 ) -> Path:
     """Download + extract chrome-headless-shell for ``internal_key``.
+
     Returns the path to the installed binary.
     """
     try:
@@ -102,7 +105,25 @@ def download_for(
         tmp_path = Path(tmp.name)
     try:
         with urllib.request.urlopen(url) as resp, open(tmp_path, "wb") as out:
-            shutil.copyfileobj(resp, out, length=1024 * 1024)
+            total = int(resp.headers.get("Content-Length", 0))
+            chunk = 1024 * 1024
+            downloaded = 0
+            last_pct = -10
+            while True:
+                buf = resp.read(chunk)
+                if not buf:
+                    break
+                out.write(buf)
+                downloaded += len(buf)
+                if total and verbose:
+                    pct = int(downloaded * 100 / total)
+                    if pct >= last_pct + 10:
+                        print(
+                            f"  [{internal_key}] {pct}% "
+                            f"({downloaded // (1024 * 1024)}/"
+                            f"{total // (1024 * 1024)} MB)"
+                        )
+                        last_pct = pct
 
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
@@ -144,8 +165,10 @@ def download_for(
 
 
 def default_dest_dir() -> Path:
-    """Where install_chrome writes by default — next to this module inside
-    the installed package, i.e. ``<site-packages>/blazeweb/_binaries/``."""
+    """Default install destination next to this module.
+
+    Resolves to ``<site-packages>/blazeweb/_binaries/`` for normal installs.
+    """
     return Path(__file__).resolve().parent / "_binaries"
 
 

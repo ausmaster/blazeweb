@@ -11,18 +11,20 @@ would have caught today's ``HeadlessChrome`` substring tripwire.
 
 from __future__ import annotations
 
-import pytest
+import re
 
 import blazeweb
+import pytest
+from blazeweb._download_chrome import CHROME_VERSION
 from blazeweb.presets import stealth
-
+from pytest_httpserver import HTTPServer
 
 # ---------------------------------------------------------------------------
 # UA / UA-CH on the wire
 # ---------------------------------------------------------------------------
 
 
-def test_user_agent_header_on_wire(httpserver):
+def test_user_agent_header_on_wire(httpserver: HTTPServer) -> None:
     """Baseline — the plain UA override plumbs through to the actual request."""
     httpserver.expect_request("/").respond_with_data(
         "<html><body>ok</body></html>", content_type="text/html"
@@ -33,7 +35,7 @@ def test_user_agent_header_on_wire(httpserver):
     assert req.headers.get("User-Agent") == "BlazeTest/1.0"
 
 
-def test_user_agent_metadata_emits_sec_ch_ua(httpserver):
+def test_user_agent_metadata_emits_sec_ch_ua(httpserver: HTTPServer) -> None:
     """The structured metadata lands in ``Sec-CH-UA-*`` client-hint headers.
 
     Chrome sends the three low-entropy hints (``Sec-CH-UA``,
@@ -77,7 +79,7 @@ def test_user_agent_metadata_emits_sec_ch_ua(httpserver):
 # ---------------------------------------------------------------------------
 
 
-def test_on_new_document_runs_and_mutates_dom(httpserver):
+def test_on_new_document_runs_and_mutates_dom(httpserver: HTTPServer) -> None:
     """The canonical CDP primitive — fires before any page script."""
     httpserver.expect_request("/").respond_with_data(
         "<html><body></body></html>", content_type="text/html"
@@ -95,7 +97,7 @@ def test_on_new_document_runs_and_mutates_dom(httpserver):
     assert 'data-newdoc="ok"' in str(result)
 
 
-def test_on_dom_content_loaded_sugar_wraps_listener(httpserver):
+def test_on_dom_content_loaded_sugar_wraps_listener(httpserver: HTTPServer) -> None:
     """The DCL sugar wraps the source in a DOMContentLoaded listener."""
     httpserver.expect_request("/").respond_with_data(
         "<html><body></body></html>", content_type="text/html"
@@ -110,7 +112,7 @@ def test_on_dom_content_loaded_sugar_wraps_listener(httpserver):
     assert 'data-dcl="yes"' in str(result)
 
 
-def test_on_load_sugar_wraps_listener(httpserver):
+def test_on_load_sugar_wraps_listener(httpserver: HTTPServer) -> None:
     """The load sugar wraps the source in a window.load listener."""
     httpserver.expect_request("/").respond_with_data(
         "<html><body></body></html>", content_type="text/html"
@@ -125,7 +127,7 @@ def test_on_load_sugar_wraps_listener(httpserver):
     assert 'data-onload="yes"' in str(result)
 
 
-def test_isolated_world_invisible_to_main_world(httpserver):
+def test_isolated_world_invisible_to_main_world(httpserver: HTTPServer) -> None:
     """Isolated-world scripts run in a separate JS global; main-world scripts
     can't see the globals they set. The DOM is shared (both worlds can mutate
     ``document``), so we use a dataset attribute to exfiltrate the main-world
@@ -147,7 +149,7 @@ def test_isolated_world_invisible_to_main_world(httpserver):
     assert 'data-main-sees-iso="no"' in str(result)
 
 
-def test_url_scoped_only_fires_on_substring_match(httpserver):
+def test_url_scoped_only_fires_on_substring_match(httpserver: HTTPServer) -> None:
     """Scripts keyed in ``url_scoped`` fire only when the URL contains the key."""
     httpserver.expect_request("/foo").respond_with_data(
         "<html><body></body></html>", content_type="text/html"
@@ -178,7 +180,28 @@ def test_url_scoped_only_fires_on_substring_match(httpserver):
 # ---------------------------------------------------------------------------
 
 
-def test_stealth_basic_preset_constructs():
+def test_basic_ua_major_matches_chrome_version() -> None:
+    """Stealth UA's Chrome major must match the bundled CHROME_VERSION.
+
+    Detectors compare UA-claimed version against JS-feature shape; a mismatch
+    is itself a fingerprint tell. Bumping ``CHROME_VERSION`` in
+    ``_download_chrome.py`` requires a paired bump of ``BASIC_UA`` and
+    ``BASIC_UA_METADATA`` here.
+    """
+    chrome_major = CHROME_VERSION.split(".")[0]
+    m = re.search(r"Chrome/(\d+)", stealth.BASIC_UA)
+    assert m is not None, f"BASIC_UA has no Chrome/<n>: {stealth.BASIC_UA!r}"
+    assert m.group(1) == chrome_major, (
+        f"BASIC_UA major {m.group(1)} != CHROME_VERSION major {chrome_major}"
+    )
+    for brand in stealth.BASIC_UA_METADATA["brands"]:
+        if brand["brand"] in ("Google Chrome", "Chromium"):
+            assert brand["version"] == chrome_major, (
+                f"brand {brand['brand']} version {brand['version']} != {chrome_major}"
+            )
+
+
+def test_stealth_basic_preset_constructs() -> None:
     """``Client(**stealth.BASIC)`` spreads into the config hierarchy cleanly."""
     with blazeweb.Client(**stealth.BASIC) as c:
         ua = c.config.network.user_agent
@@ -190,13 +213,13 @@ def test_stealth_basic_preset_constructs():
         assert len(c.config.scripts.on_new_document) == 5
 
 
-def test_stealth_fingerprint_preset_constructs():
+def test_stealth_fingerprint_preset_constructs() -> None:
     with blazeweb.Client(**stealth.FINGERPRINT) as c:
         # 5 basic + WebGL + canvas-noise = 7
         assert len(c.config.scripts.on_new_document) == 7
 
 
-def test_preset_overridable_via_pre_merge():
+def test_preset_overridable_via_pre_merge() -> None:
     """Users tweak a preset field by pre-merging into a fresh dict. Python
     forbids duplicate keys across multiple ``**`` spreads (or between a ``**``
     and an explicit kwarg) in the same call, so the idiom is to build the
@@ -207,7 +230,7 @@ def test_preset_overridable_via_pre_merge():
         assert len(c.config.scripts.on_new_document) == 5
 
 
-def test_stealth_basic_removes_headless_substring(httpserver):
+def test_stealth_basic_removes_headless_substring(httpserver: HTTPServer) -> None:
     """Regression guard at the wire level — ``HeadlessChrome`` must not appear
     in the UA when stealth.BASIC is active. This is the specific tripwire that
     Akamai first-byte-matched against cnn.com."""
@@ -218,7 +241,7 @@ def test_stealth_basic_removes_headless_substring(httpserver):
         c.fetch(httpserver.url_for("/"))
     ua = httpserver.log[0][0].headers.get("User-Agent") or ""
     assert "HeadlessChrome" not in ua
-    assert "Chrome/131" in ua
+    assert f"Chrome/{CHROME_VERSION.split('.')[0]}" in ua
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +251,7 @@ def test_stealth_basic_removes_headless_substring(httpserver):
 
 @pytest.mark.benchmark
 @pytest.mark.real_sites
-def test_stealth_basic_preset_fetches_cnn():
+def test_stealth_basic_preset_fetches_cnn() -> None:
     """Without stealth, cnn.com returns ~250 B ``Unknown Error`` because Akamai
     first-byte-matches ``HeadlessChrome`` in the UA. With ``stealth.BASIC``,
     the real 5 MB homepage comes through."""
