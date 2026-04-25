@@ -18,7 +18,7 @@ mod runtime;
 
 use client::Client;
 use dom::{Dom, Element};
-use result::{RawFetchOutput, RawRenderOutput};
+use result::{ConsoleMessageRs, RawFetchOutput, RawRenderOutput};
 
 /// Initialize env_logger. `BLAZEWEB_LOG` takes precedence over `RUST_LOG`;
 /// default is "warn" (only warnings + errors). Output has millisecond timestamps
@@ -76,6 +76,7 @@ fn blazeweb_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Client>()?;
     m.add_class::<RawRenderOutput>()?;
     m.add_class::<RawFetchOutput>()?;
+    m.add_class::<ConsoleMessageRs>()?;
     m.add_class::<Dom>()?;
     m.add_class::<Element>()?;
     m.add_function(wrap_pyfunction!(_set_rust_log_level, m)?)?;

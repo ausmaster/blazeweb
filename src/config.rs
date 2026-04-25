@@ -31,6 +31,19 @@ pub enum WaitUntil {
     DomContentLoaded,
 }
 
+/// Filter threshold for ``RenderResult.console_messages`` capture.
+/// Mirrors ``ClientConfig.capture_console_level``.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureConsoleLevel {
+    /// Default. Capture only ``console.error`` + uncaught exceptions.
+    #[default]
+    Error,
+    /// Capture warnings and errors.
+    Warn,
+    /// Capture every standard ``console.*`` method.
+    All,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientConfigRs {
     pub concurrency: usize,
@@ -39,6 +52,8 @@ pub struct ClientConfigRs {
     /// Extra sleep after the chosen lifecycle event fires, in milliseconds.
     /// Useful for SPAs that render content via async JS AFTER DCL / load.
     pub wait_after_ms: u64,
+    /// Which console levels populate `RenderResult.console_messages`.
+    pub capture_console_level: CaptureConsoleLevel,
     pub viewport: ViewportRs,
     pub network: NetworkRs,
     pub emulation: EmulationRs,
@@ -158,6 +173,7 @@ impl Default for ClientConfigRs {
             concurrency: 16,
             wait_until: WaitUntil::default(),
             wait_after_ms: 0,
+            capture_console_level: CaptureConsoleLevel::default(),
             viewport: ViewportRs::default(),
             network: NetworkRs::default(),
             emulation: EmulationRs {
@@ -230,6 +246,21 @@ pub fn parse_client_config(py_dict: &Bound<'_, PyAny>) -> Result<ClientConfigRs>
             && !v.is_none()
         {
             cfg.wait_after_ms = v.extract().map_err(to_internal)?;
+        }
+        if let Some(v) = d.get_item("capture_console_level")?
+            && !v.is_none()
+        {
+            let s: String = v.extract().map_err(to_internal)?;
+            cfg.capture_console_level = match s.as_str() {
+                "all" => CaptureConsoleLevel::All,
+                "warn" => CaptureConsoleLevel::Warn,
+                "error" => CaptureConsoleLevel::Error,
+                other => {
+                    return Err(BlazeError::Internal(format!(
+                        "invalid capture_console_level {other:?}; expected all|warn|error"
+                    )));
+                }
+            };
         }
         if let Some(v) = d.get_item("viewport")? {
             cfg.viewport = parse_viewport(&v)?;
