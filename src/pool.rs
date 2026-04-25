@@ -32,6 +32,15 @@ use crate::result::ConsoleMessageRs;
 /// registrations. Page JS cannot read or tamper with globals defined here.
 const ISOLATED_WORLD_NAME: &str = "blazeweb_isolated";
 
+/// Build a `Vec<BlockPattern>` for `Network.setBlockedURLs` from a slice of
+/// URL pattern strings. URLPattern syntax (`*://*.doubleclick.net/*`),
+/// case-sensitive matching enabled.
+pub(crate) fn block_patterns(urls: &[String]) -> Vec<BlockPattern> {
+    urls.iter()
+        .map(|p| BlockPattern::new(p.clone(), true))
+        .collect()
+}
+
 /// One pooled page + its persistent console-message and main-doc-status
 /// collectors. Console messages flow in from ``Runtime.consoleAPICalled`` and
 /// ``Runtime.exceptionThrown`` listeners spawned at page creation; drained
@@ -211,15 +220,8 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             "Network.setBlockedURLs ({} patterns)",
             base.network.block_urls.len()
         );
-        // URLPattern syntax (`*://*.doubleclick.net/*`), not legacy glob.
-        let patterns: Vec<BlockPattern> = base
-            .network
-            .block_urls
-            .iter()
-            .map(|p| BlockPattern::new(p.clone(), true))
-            .collect();
         page.execute(SetBlockedUrLsParams {
-            url_patterns: Some(patterns),
+            url_patterns: Some(block_patterns(&base.network.block_urls)),
         })
         .await?;
     }

@@ -365,6 +365,22 @@ class FetchConfig(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
     """Merged on top of the Client's base ``network.extra_headers``."""
 
+    scripts: list[str] = Field(default_factory=list)
+    """JavaScript snippets to register via
+    ``Page.addScriptToEvaluateOnNewDocument`` BEFORE navigation. Each
+    string is a complete script body; it runs before any page-side script.
+    Stacks on top of any Client-level ``scripts.on_new_document``. Removed
+    after capture so they don't leak to subsequent fetches on the same
+    pooled tab."""
+
+    block_urls: list[str] = Field(default_factory=list)
+    """URL patterns to block at the network layer for this call. Additive
+    over the Client's base ``network.block_urls`` — both apply. Pattern
+    syntax matches CDP ``Network.setBlockedURLs`` (supports ``*``
+    wildcards). Restored to the Client-level base list after capture so
+    the per-call block doesn't leak to subsequent fetches on the same
+    pooled tab."""
+
     timeout_ms: int | None = Field(None, ge=100)
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)

@@ -197,6 +197,15 @@ impl Default for ClientConfigRs {
 #[derive(Debug, Clone, Default)]
 pub struct FetchConfigRs {
     pub extra_headers: HashMap<String, String>,
+    /// Per-call init scripts. Registered via
+    /// ``Page.addScriptToEvaluateOnNewDocument`` BEFORE navigation; removed
+    /// after capture so they don't leak to subsequent fetches.
+    pub scripts: Vec<String>,
+    /// Per-call URL patterns to block at the network layer. Merged with
+    /// ``base.network.block_urls`` and applied via
+    /// ``Network.setBlockedURLs`` before navigation; base is restored
+    /// after capture so per-call entries don't leak.
+    pub block_urls: Vec<String>,
     pub timeout_ms: Option<u64>,
     /// Per-call override. None = inherit client default.
     pub wait_until: Option<WaitUntil>,
@@ -289,6 +298,12 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
     if let Some(d) = as_dict(py_dict)? {
         if let Some(v) = d.get_item("extra_headers")? {
             cfg.extra_headers = parse_headers(&v)?;
+        }
+        if let Some(v) = d.get_item("scripts")? {
+            cfg.scripts = v.extract().map_err(to_internal)?;
+        }
+        if let Some(v) = d.get_item("block_urls")? {
+            cfg.block_urls = v.extract().map_err(to_internal)?;
         }
         if let Some(v) = d.get_item("timeout_ms")?
             && !v.is_none()

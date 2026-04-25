@@ -8,16 +8,19 @@
 use std::time::{Duration, Instant};
 
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
-use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
+use chromiumoxide::cdp::browser_protocol::network::{
+    SetBlockedUrLsParams, SetExtraHttpHeadersParams,
+};
 use chromiumoxide::cdp::browser_protocol::page::{
-    CaptureScreenshotFormat, CaptureScreenshotParams, EventDomContentEventFired,
-    EventLoadEventFired,
+    AddScriptToEvaluateOnNewDocumentParams, CaptureScreenshotFormat, CaptureScreenshotParams,
+    EventDomContentEventFired, EventLoadEventFired, RemoveScriptToEvaluateOnNewDocumentParams,
+    ScriptIdentifier,
 };
 use futures::StreamExt;
 
 use crate::config::{ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs, WaitUntil};
 use crate::error::{BlazeError, Result};
-use crate::pool::PageGuard;
+use crate::pool::{PageGuard, block_patterns};
 use crate::result::ConsoleMessageRs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,24 @@ pub async fn capture_page(
 
     let page = guard.page();
 
+    // Per-call init scripts — register BEFORE the timeout-wrapped main work
+    // so we hold their identifiers in outer scope for cleanup. ``page.execute``
+    // for ``Page.addScriptToEvaluateOnNewDocument`` is fast (one CDP RTT) and
+    // shouldn't itself block long enough to need the lifecycle timeout.
+    // Cleanup runs unconditionally below — success or failure path.
+    let mut script_ids: Vec<ScriptIdentifier> = Vec::with_capacity(per_call.scripts.len());
+    for src in &per_call.scripts {
+        log::trace!(
+            target: "blazeweb::engine",
+            "[{url}] registering per-call init script ({} chars)",
+            src.len()
+        );
+        let resp = page
+            .execute(AddScriptToEvaluateOnNewDocumentParams::new(src.clone()))
+            .await?;
+        script_ids.push(resp.identifier.clone());
+    }
+
     let fut = async {
         // Per-call viewport override (e.g. different size just for this screenshot).
         if let Some((w, h)) = per_shot.viewport {
@@ -68,6 +89,25 @@ pub async fn capture_page(
                     .build()
                     .map_err(|e| BlazeError::Cdp(format!("metrics: {e}")))?,
             )
+            .await?;
+        }
+
+        // Per-call URL blocking — apply merged ``base + per-call`` list via
+        // Network.setBlockedURLs. Cycle 4 will pair this with restoration to
+        // the base list so per-call entries don't leak across fetches.
+        if !per_call.block_urls.is_empty() {
+            let mut merged = base.network.block_urls.clone();
+            merged.extend(per_call.block_urls.iter().cloned());
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] applying {} blocked URLs (base={}, per_call={})",
+                merged.len(),
+                base.network.block_urls.len(),
+                per_call.block_urls.len()
+            );
+            page.execute(SetBlockedUrLsParams {
+                url_patterns: Some(block_patterns(&merged)),
+            })
             .await?;
         }
 
@@ -220,6 +260,27 @@ pub async fn capture_page(
     };
 
     let fut_result = tokio::time::timeout(Duration::from_millis(timeout_ms), fut).await;
+
+    // Per-call init script cleanup — runs unconditionally so we never leak
+    // scripts to the next fetch on this pooled tab. Errors here are swallowed:
+    // the page may already be in a bad state if we got here via a CDP failure,
+    // and surfacing a cleanup error would mask the original cause.
+    for id in &script_ids {
+        let _ = page
+            .execute(RemoveScriptToEvaluateOnNewDocumentParams::new(id.clone()))
+            .await;
+    }
+
+    // Per-call URL-block cleanup — restore the Client-level baseline so the
+    // per-call additions don't leak to the next fetch. Sending an empty
+    // pattern list clears all blocks if the base list is itself empty.
+    if !per_call.block_urls.is_empty() {
+        let _ = page
+            .execute(SetBlockedUrLsParams {
+                url_patterns: Some(block_patterns(&base.network.block_urls)),
+            })
+            .await;
+    }
 
     // On error, reset the page so the next URL on this tab isn't poisoned by
     // a half-loaded predecessor.
