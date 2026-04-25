@@ -936,7 +936,14 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
         return FetchConfig()
     data: dict[str, Any] = base.model_dump() if base else {}
     for k, v in overrides.items():
-        if k not in {"extra_headers", "timeout_ms", "wait_until", "wait_after_ms"}:
+        if k not in {
+            "block_urls",
+            "extra_headers",
+            "scripts",
+            "timeout_ms",
+            "wait_until",
+            "wait_after_ms",
+        }:
             raise TypeError(f"unknown fetch kwarg: {k!r}")
         data[k] = v
     return FetchConfig.model_validate(data)
