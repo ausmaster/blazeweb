@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel as _BaseModel
 
@@ -60,11 +60,16 @@ _configure_logging()
 _client_log = logger.getChild("client")
 
 __all__ = [
-    # Module-level convenience
+    # Module-level convenience — sync
     "fetch",
     "screenshot",
     "fetch_all",
+    # Module-level convenience — async
+    "afetch",
+    "ascreenshot",
+    "afetch_all",
     # Classes
+    "AsyncClient",
     "Client",
     "Dom",
     "Element",
@@ -530,6 +535,378 @@ def fetch_all(
 
 
 # ----------------------------------------------------------------------------
+# AsyncClient — async peer of Client
+# ----------------------------------------------------------------------------
+
+
+class AsyncClient:
+    """Async peer of :class:`Client`. Same API, methods return coroutines.
+
+    Use as an async context manager (``async with``) or call :meth:`aclose`
+    explicitly. Multiple coroutines on one event loop can ``await`` fetch /
+    screenshot calls concurrently — the page-pool semaphore caps in-flight
+    pages at ``concurrency``.
+
+    Construction is sync (chromium subprocess spawn briefly blocks the event
+    loop). Match :class:`Client`'s signature: pass ``config=ClientConfig(...)``
+    or flat kwargs.
+
+    Example:
+        >>> import asyncio, blazeweb
+        >>>
+        >>> async def main():
+        ...     async with blazeweb.AsyncClient() as ac:
+        ...         result = await ac.fetch("https://example.com")
+        ...         print(result.dom.title())
+        >>>
+        >>> asyncio.run(main())
+    """
+
+    __slots__ = ("_rust", "_config")
+
+    def __init__(
+        self,
+        *args: Any,
+        config: ClientConfig | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Construct an AsyncClient.
+
+        Args:
+            *args: Reserved for keyword-only enforcement. Passing any
+                positional args raises ``TypeError``.
+            config: A pre-built ``ClientConfig``. Mutually exclusive with
+                ``**kwargs``.
+            **kwargs: Flat config kwargs (``viewport=(w, h)``,
+                ``concurrency=N``, ``user_agent=...``, etc.). See
+                :meth:`ClientConfig.from_flat`. Mutually exclusive with
+                ``config``.
+
+        Raises:
+            TypeError: If positional args are passed, or if both ``config``
+                and flat kwargs are given.
+        """
+        if args:
+            raise TypeError(
+                "AsyncClient() takes only keyword args. Pass config=ClientConfig(...) "
+                "or flat kwargs like AsyncClient(viewport=(w,h), concurrency=N, ...)."
+            )
+        if config is not None and kwargs:
+            raise TypeError("pass either config=... or flat kwargs, not both")
+
+        if config is None:
+            config = ClientConfig.from_flat(**kwargs) if kwargs else ClientConfig()
+
+        self._config = config
+        _client_log.info(
+            "AsyncClient init: concurrency=%d viewport=%dx%d",
+            config.concurrency,
+            config.viewport.width,
+            config.viewport.height,
+        )
+        self._rust = _RustClient(config.model_dump())
+
+    # --- Config introspection + runtime update ---------------------------
+
+    @property
+    def config(self) -> _ConfigView:
+        """Live-mutable config view.
+
+        ``ac.config.network.user_agent = "X"`` at any depth auto-syncs to
+        Rust. Launch-only fields raise ``ValueError`` at the assignment
+        line. Call ``.snapshot()`` for a detached deep-copy.
+        """
+        return _ConfigView(self, ())
+
+    def update_config(
+        self,
+        *args: Any,
+        config: ClientConfig | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Swap in new config (takes effect on next fetch).
+
+        Sync — config validation only, no IO. Pass ``config=ClientConfig(...)``
+        OR flat kwargs. In-flight calls snapshot at start so they don't see
+        a torn state.
+
+        Raises:
+            ValueError: On any launch-only field change. Create a new
+                AsyncClient instead.
+            TypeError: If both ``config`` and flat kwargs are given.
+        """
+        if args:
+            raise TypeError("update_config() takes only keyword args")
+        if config is not None and kwargs:
+            raise TypeError("pass either config= OR flat kwargs, not both")
+
+        if config is not None:
+            new_config = config
+        elif kwargs:
+            partial = _flat_kwargs_to_partial(kwargs)
+            merged = _deep_merge(self._config.model_dump(), partial)
+            new_config = ClientConfig.model_validate(merged)
+        else:
+            return
+
+        self._apply_config(new_config)
+
+    def _apply_config(self, new_config: ClientConfig) -> None:
+        """Validate launch-only invariants, push to Rust, store new config."""
+        old_data = self._config.model_dump()
+        new_data = new_config.model_dump()
+        for path in _LAUNCH_ONLY_FIELDS:
+            if _get_nested(old_data, path) != _get_nested(new_data, path):
+                raise ValueError(
+                    f"cannot change launch-only field {'.'.join(path)!r} at runtime "
+                    f"(was {_get_nested(old_data, path)!r}, "
+                    f"requested {_get_nested(new_data, path)!r}). "
+                    f"Create a new AsyncClient to change this setting."
+                )
+        self._rust.update_config(new_data)
+        self._config = new_config
+
+    # --- Primary API ------------------------------------------------------
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        config: FetchConfig | None = None,
+        **overrides: Any,
+    ) -> RenderResult:
+        """Fetch URL, return fully-rendered HTML post-JS.
+
+        Args:
+            url: The URL to fetch.
+            config: A ``FetchConfig`` for this call. Mutually exclusive with
+                ``**overrides``.
+            **overrides: Per-call overrides
+                (``extra_headers``, ``timeout_ms``, ``wait_until``,
+                ``wait_after_ms``).
+
+        Returns:
+            ``RenderResult`` — a ``str`` subclass holding the rendered HTML
+            plus ``.errors`` / ``.final_url`` / ``.status_code`` /
+            ``.elapsed_s`` / ``.dom``.
+
+        Raises:
+            RuntimeError: On CDP / navigation failures.
+        """
+        fc = _merge_fetch_config(config, overrides)
+        _client_log.debug("afetch: %s", url)
+        raw = await self._rust.fetch_async(url, fc.model_dump())
+        return RenderResult(
+            raw.html,
+            errors=raw.errors,
+            final_url=raw.final_url,
+            status_code=raw.status_code,
+            elapsed_s=raw.elapsed_s,
+            _raw=raw,
+        )
+
+    async def screenshot(
+        self,
+        url: str,
+        *,
+        config: ScreenshotConfig | None = None,
+        **overrides: Any,
+    ) -> bytes:
+        """Fetch URL, return a screenshot as image bytes (PNG by default).
+
+        Args:
+            url: The URL to fetch.
+            config: A ``ScreenshotConfig`` for this call. Mutually exclusive
+                with ``**overrides``.
+            **overrides: Per-call overrides matching ``ScreenshotConfig``
+                fields (``viewport``, ``full_page``, ``format``, ``quality``,
+                etc.).
+
+        Returns:
+            Image bytes in the requested format.
+
+        Raises:
+            TypeError: On unknown screenshot kwarg.
+            RuntimeError: On CDP / navigation failures.
+        """
+        if config is None and not overrides:
+            sc = ScreenshotConfig()
+        elif config is not None and not overrides:
+            sc = config
+        else:
+            data = config.model_dump() if config else {}
+            for k, v in overrides.items():
+                if k not in _SCREENSHOT_KWARGS:
+                    raise TypeError(f"unknown screenshot kwarg: {k!r}")
+                data[k] = v
+            sc = ScreenshotConfig.model_validate(data)
+        _client_log.debug("ascreenshot: %s (format=%s)", url, sc.format)
+        return bytes(await self._rust.screenshot_async(url, sc.model_dump()))
+
+    async def fetch_all(
+        self,
+        url: str,
+        *,
+        config: FetchConfig | None = None,
+        full_page: bool = False,
+        format: Literal["png", "jpeg", "webp"] = "png",
+        quality: int | None = None,
+        **overrides: Any,
+    ) -> FetchResult:
+        """Fetch URL, return HTML + image bytes from one page visit.
+
+        Args:
+            url: The URL to fetch.
+            config: A ``FetchConfig`` for this call.
+            full_page: Capture the entire scrollable page, not just the
+                viewport.
+            format: Image encoding — ``"png"`` (default), ``"jpeg"``,
+                or ``"webp"``.
+            quality: 0-100 for jpeg/webp; ignored for png.
+            **overrides: Per-call ``FetchConfig`` overrides.
+
+        Returns:
+            ``FetchResult`` with ``.html`` (RenderResult) and ``.png``
+            (image bytes — field name is historical; holds whatever
+            ``format`` was requested).
+
+        Raises:
+            RuntimeError: On CDP / navigation failures.
+        """
+        fc = _merge_fetch_config(config, overrides)
+        sc = ScreenshotConfig(full_page=full_page, format=format, quality=quality)
+        _client_log.debug("afetch_all: %s (format=%s)", url, format)
+        raw = await self._rust.fetch_all_async(url, fc.model_dump(), sc.model_dump())
+        return FetchResult(raw)
+
+    async def batch(
+        self,
+        urls: Iterable[str],
+        *,
+        capture: Literal["html", "png", "both"] = "html",
+        config: FetchConfig | None = None,
+    ) -> list[RenderResult | FetchResult | bytes]:
+        """Run a batch of URLs in parallel (tokio-driven). Awaits all.
+
+        Args:
+            urls: Iterable of URLs to fetch.
+            capture: ``"html"`` → list[RenderResult], ``"png"`` → list[bytes],
+                ``"both"`` → list[FetchResult].
+            config: A ``FetchConfig`` applied to every URL in the batch.
+
+        Returns:
+            List of results in input order. Per-URL failures are returned as
+            stub results (empty html/bytes + ``errors`` populated) rather
+            than aborting the batch.
+
+        Raises:
+            ValueError: If ``capture`` is not one of the three valid values.
+        """
+        fc = config or FetchConfig()
+        url_list = list(urls)
+        _client_log.info("abatch: %d URLs, capture=%s", len(url_list), capture)
+        raws = await self._rust.batch_async(url_list, capture, fc.model_dump())
+        results: list[RenderResult | FetchResult | bytes]
+        if capture == "html":
+            results = [
+                RenderResult(
+                    r.html,
+                    errors=r.errors,
+                    final_url=r.final_url,
+                    status_code=r.status_code,
+                    elapsed_s=r.elapsed_s,
+                    _raw=r,
+                )
+                for r in raws
+            ]
+        elif capture == "png":
+            results = [bytes(b) for b in raws]
+        else:
+            results = [FetchResult(r) for r in raws]
+        _client_log.debug("abatch done: %d results returned", len(results))
+        return results
+
+    # --- Lifecycle --------------------------------------------------------
+
+    async def aclose(self) -> None:
+        """Tear down the chromium process and free pool resources.
+
+        Idempotent — calling on an already-closed AsyncClient is a no-op.
+        """
+        _client_log.info("AsyncClient aclose")
+        await self._rust.close_async()
+
+    async def __aenter__(self) -> AsyncClient:
+        """Enter the async context manager."""
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        """Exit the async context manager — calls :meth:`aclose`."""
+        await self.aclose()
+
+
+# ----------------------------------------------------------------------------
+# Module-level async convenience (shared default AsyncClient, lazy-init)
+# ----------------------------------------------------------------------------
+
+_default_async_client: AsyncClient | None = None
+_default_async_client_lock = threading.Lock()
+
+
+def _get_default_async_client() -> AsyncClient:
+    """Return (or lazily build) the shared module-level AsyncClient."""
+    global _default_async_client
+    if _default_async_client is None:
+        with _default_async_client_lock:
+            if _default_async_client is None:
+                _default_async_client = AsyncClient()
+    return _default_async_client
+
+
+async def afetch(
+    url: str, *, config: FetchConfig | None = None, **overrides: Any
+) -> RenderResult:
+    """Async fetch URL → fully-rendered HTML. Uses a shared default AsyncClient.
+
+    See :meth:`AsyncClient.fetch` for arguments.
+    """
+    return await _get_default_async_client().fetch(url, config=config, **overrides)
+
+
+async def ascreenshot(
+    url: str, *, config: ScreenshotConfig | None = None, **overrides: Any
+) -> bytes:
+    """Async fetch URL → image bytes. Uses a shared default AsyncClient.
+
+    See :meth:`AsyncClient.screenshot` for arguments.
+    """
+    return await _get_default_async_client().screenshot(url, config=config, **overrides)
+
+
+async def afetch_all(
+    url: str,
+    *,
+    config: FetchConfig | None = None,
+    full_page: bool = False,
+    format: Literal["png", "jpeg", "webp"] = "png",
+    quality: int | None = None,
+    **overrides: Any,
+) -> FetchResult:
+    """Async fetch URL → HTML + image bytes. Uses a shared default AsyncClient.
+
+    See :meth:`AsyncClient.fetch_all` for arguments.
+    """
+    return await _get_default_async_client().fetch_all(
+        url,
+        config=config,
+        full_page=full_page,
+        format=format,
+        quality=quality,
+        **overrides,
+    )
+
+
+# ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
 
@@ -558,21 +935,34 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
 
 
 # ----------------------------------------------------------------------------
-# Live-mutable config view — returned by Client.config
+# Live-mutable config view — returned by Client.config / AsyncClient.config
 # ----------------------------------------------------------------------------
 
 
+class _ClientLike(Protocol):
+    """Internal: structural type for ``_ConfigView``.
+
+    Both ``Client`` and ``AsyncClient`` satisfy this — they share the
+    config-view machinery despite differing in their fetch/screenshot
+    return types.
+    """
+
+    _config: ClientConfig
+
+    def _apply_config(self, new_config: ClientConfig) -> None: ...
+
+
 class _ConfigView:
-    """Live proxy over a Client's config.
+    """Live proxy over a client's config.
 
     Reads delegate to the pydantic model; writes route through
-    ``Client._apply_config`` to keep Rust in sync. Only ``_client`` / ``_path``
-    live on instances (``__slots__``).
+    ``client._apply_config`` to keep Rust in sync. Only ``_client`` /
+    ``_path`` live on instances (``__slots__``).
     """
 
     __slots__ = ("_client", "_path")
 
-    def __init__(self, client: Client, path: tuple[str, ...]) -> None:
+    def __init__(self, client: _ClientLike, path: tuple[str, ...]) -> None:
         object.__setattr__(self, "_client", client)
         object.__setattr__(self, "_path", path)
 
