@@ -31,7 +31,7 @@ use crate::config::{
 use crate::engine::{CaptureMode, CaptureOutput, capture_page};
 use crate::error::{BlazeError, Result};
 use crate::pool::PagePool;
-use crate::result::{RawFetchOutput, RawRenderOutput};
+use crate::result::{ConsoleMessageRs, RawFetchOutput, RawRenderOutput};
 use crate::runtime;
 
 /// Chromium Browser + page pool + handler task. `config` is RwLock-wrapped so
@@ -93,7 +93,7 @@ async fn do_fetch_inner(
     .await?;
     Ok(RawRenderOutput {
         html: out.html.unwrap_or_default(),
-        errors: out.errors,
+        console_messages: out.console_messages,
         final_url: out.final_url,
         status_code: out.status_code,
         elapsed_s: out.elapsed_s,
@@ -140,7 +140,7 @@ async fn do_fetch_all_inner(
     Ok(RawFetchOutput {
         html: out.html.unwrap_or_default(),
         png: out.png.unwrap_or_default(),
-        errors: out.errors,
+        console_messages: out.console_messages,
         final_url: out.final_url,
         status_code: out.status_code,
         elapsed_s: out.elapsed_s,
@@ -204,7 +204,7 @@ fn batch_result_to_py(
         Ok(out) => match mode {
             CaptureMode::Html => list.append(RawRenderOutput {
                 html: out.html.unwrap_or_default(),
-                errors: out.errors,
+                console_messages: out.console_messages,
                 final_url: out.final_url,
                 status_code: out.status_code,
                 elapsed_s: out.elapsed_s,
@@ -213,7 +213,7 @@ fn batch_result_to_py(
             CaptureMode::Both => list.append(RawFetchOutput {
                 html: out.html.unwrap_or_default(),
                 png: out.png.unwrap_or_default(),
-                errors: out.errors,
+                console_messages: out.console_messages,
                 final_url: out.final_url,
                 status_code: out.status_code,
                 elapsed_s: out.elapsed_s,
@@ -221,10 +221,19 @@ fn batch_result_to_py(
         },
         Err(e) => {
             log::warn!("batch item failed: {e}");
+            // Synthesize a single error-level ConsoleMessage so the stub
+            // result still surfaces the failure via `RenderResult.errors`.
+            // Timestamp is 0.0 — there's no real event time for an internal
+            // failure.
+            let stub_err = vec![ConsoleMessageRs {
+                kind: "error".to_string(),
+                text: e.to_string(),
+                timestamp: 0.0,
+            }];
             match mode {
                 CaptureMode::Html => list.append(RawRenderOutput {
                     html: String::new(),
-                    errors: vec![e.to_string()],
+                    console_messages: stub_err,
                     final_url: String::new(),
                     status_code: 0,
                     elapsed_s: 0.0,
@@ -233,7 +242,7 @@ fn batch_result_to_py(
                 CaptureMode::Both => list.append(RawFetchOutput {
                     html: String::new(),
                     png: Vec::new(),
-                    errors: vec![e.to_string()],
+                    console_messages: stub_err,
                     final_url: String::new(),
                     status_code: 0,
                     elapsed_s: 0.0,

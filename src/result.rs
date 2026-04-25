@@ -8,6 +8,26 @@ use pyo3::prelude::*;
 
 use crate::dom::Dom;
 
+/// One captured ``console.*`` event (or uncaught exception). The Python side
+/// wraps these into the user-facing ``ConsoleMessage`` dataclass.
+#[pyclass(name = "_ConsoleMessage", frozen)]
+#[derive(Clone, Debug)]
+pub struct ConsoleMessageRs {
+    /// The console method that fired, lowercase: ``"log"`` / ``"info"`` /
+    /// ``"warning"`` / ``"error"`` / ``"debug"`` / ``"trace"``. Uncaught
+    /// exceptions appear as ``"error"``.
+    #[pyo3(get, name = "type")]
+    pub kind: String,
+    /// The rendered message text (chrome stringifies non-string args before
+    /// the event fires; this is the joined result of all args).
+    #[pyo3(get)]
+    pub text: String,
+    /// ``time.time()`` (Unix epoch seconds, f64) at the moment the event was
+    /// captured by the Rust listener.
+    #[pyo3(get)]
+    pub timestamp: f64,
+}
+
 /// Output of a single fetch (HTML-only). Constructed by engine; passed to Python.
 #[pyclass(name = "_RenderOutput")]
 #[derive(Clone)]
@@ -15,7 +35,7 @@ pub struct RawRenderOutput {
     #[pyo3(get)]
     pub html: String,
     #[pyo3(get)]
-    pub errors: Vec<String>,
+    pub console_messages: Vec<ConsoleMessageRs>,
     #[pyo3(get)]
     pub final_url: String,
     #[pyo3(get)]
@@ -42,7 +62,7 @@ pub struct RawFetchOutput {
     #[pyo3(get)]
     pub png: Vec<u8>,
     #[pyo3(get)]
-    pub errors: Vec<String>,
+    pub console_messages: Vec<ConsoleMessageRs>,
     #[pyo3(get)]
     pub final_url: String,
     #[pyo3(get)]

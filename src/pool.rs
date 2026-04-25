@@ -24,17 +24,21 @@ use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::config::{ClientConfigRs, UserAgentMetadataRs};
+use crate::config::{CaptureConsoleLevel, ClientConfigRs, UserAgentMetadataRs};
 use crate::error::{BlazeError, Result};
+use crate::result::ConsoleMessageRs;
 
 /// Name of the isolated JS world used for ``scripts.isolated_world``
 /// registrations. Page JS cannot read or tamper with globals defined here.
 const ISOLATED_WORLD_NAME: &str = "blazeweb_isolated";
 
-/// One pooled page + its persistent console-error and main-doc-status collectors.
+/// One pooled page + its persistent console-message and main-doc-status
+/// collectors. Console messages flow in from ``Runtime.consoleAPICalled`` and
+/// ``Runtime.exceptionThrown`` listeners spawned at page creation; drained
+/// per-fetch by `engine::capture_page`.
 pub struct PooledPage {
     pub page: Page,
-    pub errors: Arc<Mutex<Vec<String>>>,
+    pub console_messages: Arc<Mutex<Vec<ConsoleMessageRs>>>,
     /// Latest main-doc HTTP status from Network.responseReceived — populated on
     /// response headers, well before DOMContentLoaded.
     pub main_status: Arc<Mutex<Option<u16>>>,
@@ -88,7 +92,7 @@ impl PagePool {
             .lock()
             .pop()
             .expect("semaphore permitted but pool is empty");
-        pooled.errors.lock().clear();
+        pooled.console_messages.lock().clear();
         *pooled.main_status.lock() = None;
         log::trace!(
             target: "blazeweb::pool",
@@ -131,8 +135,12 @@ impl PageGuard {
         &self.page.as_ref().expect("guard drained").page
     }
 
-    pub fn errors(&self) -> Arc<Mutex<Vec<String>>> {
-        self.page.as_ref().expect("guard drained").errors.clone()
+    pub fn console_messages(&self) -> Arc<Mutex<Vec<ConsoleMessageRs>>> {
+        self.page
+            .as_ref()
+            .expect("guard drained")
+            .console_messages
+            .clone()
     }
 
     /// Latest main-doc response status. None if no response has arrived yet.
@@ -275,32 +283,86 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
 
     register_init_scripts(&page, base).await?;
 
-    // Persistent per-page listeners: console errors + main-doc HTTP status.
-    let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
-    {
-        use chromiumoxide::cdp::browser_protocol::log::EventEntryAdded;
-        use chromiumoxide::cdp::browser_protocol::network::{EventResponseReceived, ResourceType};
-        use chromiumoxide::cdp::js_protocol::runtime::EventExceptionThrown;
+    // Runtime domain must be enabled for ``consoleAPICalled`` events to fire.
+    page.execute(chromiumoxide::cdp::js_protocol::runtime::EnableParams::default())
+        .await?;
 
-        let errors_cl = errors.clone();
+    // Persistent per-page listeners: structured console messages + main-doc
+    // HTTP status. Level filter is captured here at page creation; runtime
+    // updates to ``capture_console_level`` via update_config don't re-arm
+    // these listeners.
+    let console_messages: Arc<Mutex<Vec<ConsoleMessageRs>>> = Arc::new(Mutex::new(Vec::new()));
+    let main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+    let level = base.capture_console_level;
+    {
+        use chromiumoxide::cdp::browser_protocol::network::{EventResponseReceived, ResourceType};
+        use chromiumoxide::cdp::js_protocol::runtime::{
+            ConsoleApiCalledType, EventConsoleApiCalled, EventExceptionThrown,
+        };
+
+        // Runtime.consoleAPICalled — every page-side ``console.*`` call.
+        // Filtered by ``capture_console_level``: All keeps everything,
+        // Warn drops log/info/debug/trace, Error drops everything except
+        // error-level events.
+        let cm_cl = console_messages.clone();
         let mut console_stream = page
-            .event_listener::<EventEntryAdded>()
+            .event_listener::<EventConsoleApiCalled>()
             .await
             .map_err(BlazeError::from)?;
         tokio::spawn(async move {
             while let Some(evt) = console_stream.next().await {
-                let entry = &evt.entry;
-                if matches!(
-                    entry.level,
-                    chromiumoxide::cdp::browser_protocol::log::LogEntryLevel::Error
-                ) {
-                    errors_cl.lock().push(entry.text.clone());
+                // We only surface six standard methods; ``dir``, ``table``,
+                // ``startGroup`` etc. are dropped.
+                let kind = match evt.r#type {
+                    ConsoleApiCalledType::Log => "log",
+                    ConsoleApiCalledType::Info => "info",
+                    ConsoleApiCalledType::Warning => "warning",
+                    ConsoleApiCalledType::Error => "error",
+                    ConsoleApiCalledType::Debug => "debug",
+                    ConsoleApiCalledType::Trace => "trace",
+                    _ => continue,
+                };
+                let accept = match level {
+                    CaptureConsoleLevel::All => true,
+                    CaptureConsoleLevel::Warn => matches!(kind, "warning" | "error"),
+                    CaptureConsoleLevel::Error => kind == "error",
+                };
+                if !accept {
+                    continue;
                 }
+                // Stringify args: JSON strings come through unquoted, other
+                // primitives via JSON repr, objects via `.description`.
+                let text = evt
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        arg.value
+                            .as_ref()
+                            .map(|v| match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            })
+                            .or_else(|| arg.description.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                cm_cl.lock().push(ConsoleMessageRs {
+                    kind: kind.to_string(),
+                    text,
+                    timestamp,
+                });
             }
         });
 
-        let errors_cl = errors.clone();
+        // Runtime.exceptionThrown — uncaught JS errors. Captured as
+        // ConsoleMessage(type="error", ...) so they show up alongside
+        // console.error calls.
+        let cm_cl = console_messages.clone();
         let mut exc_stream = page
             .event_listener::<EventExceptionThrown>()
             .await
@@ -308,12 +370,20 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
         tokio::spawn(async move {
             while let Some(evt) = exc_stream.next().await {
                 let det = &evt.exception_details;
-                let msg = det
+                let text = det
                     .exception
                     .as_ref()
                     .and_then(|o| o.description.clone())
                     .unwrap_or_else(|| det.text.clone());
-                errors_cl.lock().push(msg);
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                cm_cl.lock().push(ConsoleMessageRs {
+                    kind: "error".to_string(),
+                    text,
+                    timestamp,
+                });
             }
         });
 
@@ -336,7 +406,7 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
 
     Ok(PooledPage {
         page,
-        errors,
+        console_messages,
         main_status,
     })
 }

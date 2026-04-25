@@ -18,6 +18,7 @@ use futures::StreamExt;
 use crate::config::{ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs, WaitUntil};
 use crate::error::{BlazeError, Result};
 use crate::pool::PageGuard;
+use crate::result::ConsoleMessageRs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
@@ -29,7 +30,7 @@ pub enum CaptureMode {
 pub struct CaptureOutput {
     pub html: Option<String>,
     pub png: Option<Vec<u8>>,
-    pub errors: Vec<String>,
+    pub console_messages: Vec<ConsoleMessageRs>,
     pub final_url: String,
     pub status_code: u16,
     pub elapsed_s: f64,
@@ -163,7 +164,7 @@ pub async fn capture_page(
         let mut out = CaptureOutput {
             html: None,
             png: None,
-            errors: Vec::new(),
+            console_messages: Vec::new(),
             final_url,
             status_code,
             elapsed_s: 0.0,
@@ -205,13 +206,13 @@ pub async fn capture_page(
             out.png = Some(bytes);
         }
 
-        // Drain accumulated errors for this fetch.
-        out.errors = std::mem::take(&mut *guard.errors().lock());
-        if !out.errors.is_empty() {
+        // Drain accumulated console messages for this fetch.
+        out.console_messages = std::mem::take(&mut *guard.console_messages().lock());
+        if !out.console_messages.is_empty() {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] drained {} console errors",
-                out.errors.len()
+                "[{url}] drained {} console messages",
+                out.console_messages.len()
             );
         }
 
@@ -238,10 +239,10 @@ pub async fn capture_page(
     result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;
     log::debug!(
         target: "blazeweb::engine",
-        "[{url}] complete in {:.3}s (status={}, errors={})",
+        "[{url}] complete in {:.3}s (status={}, console_messages={})",
         result.elapsed_s,
         result.status_code,
-        result.errors.len()
+        result.console_messages.len()
     );
     Ok(result)
 }

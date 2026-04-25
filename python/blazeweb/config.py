@@ -239,6 +239,19 @@ class ClientConfig(BaseSettings):
     """Post-lifecycle-event settle (ms). Useful for SPAs that hydrate
     async after ``wait_until`` fires."""
 
+    capture_console_level: Literal["all", "warn", "error"] = "error"
+    """Level threshold for ``RenderResult.console_messages`` capture.
+
+    - ``"error"`` (default) — only ``console.error`` and uncaught exceptions.
+      Matches pre-Phase-1 behavior; minimum overhead.
+    - ``"warn"`` — adds ``console.warn``.
+    - ``"all"`` — captures every standard ``console.*`` method (log, info,
+      warning, error, debug, trace).
+
+    Captured at Client construction. Runtime updates via ``update_config``
+    do not re-arm the listeners on already-pooled pages.
+    """
+
     viewport: ViewportConfig = Field(default_factory=ViewportConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     emulation: EmulationConfig = Field(default_factory=EmulationConfig)
@@ -310,7 +323,12 @@ class ClientConfig(BaseSettings):
         if "scripts" in kwargs:
             top["scripts"] = kwargs.pop("scripts")
 
-        for top_field in ("concurrency", "wait_until", "wait_after_ms"):
+        for top_field in (
+            "concurrency",
+            "wait_until",
+            "wait_after_ms",
+            "capture_console_level",
+        ):
             if top_field in kwargs:
                 top[top_field] = kwargs.pop(top_field)
 

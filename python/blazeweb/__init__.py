@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel as _BaseModel
@@ -71,6 +72,7 @@ __all__ = [
     # Classes
     "AsyncClient",
     "Client",
+    "ConsoleMessage",
     "Dom",
     "Element",
     "FetchResult",
@@ -106,11 +108,55 @@ os.environ.setdefault(
 # ----------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ConsoleMessage:
+    """One ``console.*`` event captured during a page visit.
+
+    Attributes:
+        type: The console method that fired —
+            ``"log"`` / ``"info"`` / ``"warning"`` / ``"error"`` /
+            ``"debug"`` / ``"trace"``.
+        text: The rendered message body (chrome stringifies any non-string
+            arguments before delivering the event).
+        timestamp: ``time.time()`` (seconds since epoch) at the moment the
+            event was captured by blazeweb.
+    """
+
+    type: Literal["log", "info", "warning", "error", "debug", "trace"]
+    text: str
+    timestamp: float
+
+
+def _make_render_result(raw: _RenderOutput | _FetchOutput) -> RenderResult:
+    """Build a ``RenderResult`` from a Rust raw output.
+
+    Accepts both ``_RenderOutput`` and ``_FetchOutput`` via duck typing —
+    each carries the same ``html`` / ``console_messages`` / ``final_url`` /
+    ``status_code`` / ``elapsed_s`` / ``make_dom()`` shape. ``errors`` is
+    derived from ``console_messages`` for backward compatibility.
+    """
+    console_messages = [
+        ConsoleMessage(type=m.type, text=m.text, timestamp=m.timestamp)
+        for m in raw.console_messages
+    ]
+    errors = [m.text for m in console_messages if m.type == "error"]
+    return RenderResult(
+        raw.html,
+        errors=errors,
+        console_messages=console_messages,
+        final_url=raw.final_url,
+        status_code=raw.status_code,
+        elapsed_s=raw.elapsed_s,
+        _raw=raw,
+    )
+
+
 class RenderResult(str):
     """Fully-rendered post-JS HTML. Subclasses ``str`` (lxml, regex, BS4 work).
 
     Adds:
       - ``.errors`` — list[str] of console errors and load errors
+      - ``.console_messages`` — list[ConsoleMessage] captured during the visit
       - ``.final_url`` — URL after any redirects
       - ``.status_code`` — final HTTP status
       - ``.elapsed_s`` — end-to-end page-visit time (seconds)
@@ -118,6 +164,7 @@ class RenderResult(str):
     """
 
     errors: list[str]
+    console_messages: list[ConsoleMessage]
     final_url: str
     status_code: int
     elapsed_s: float
@@ -127,6 +174,7 @@ class RenderResult(str):
         html: str,
         *,
         errors: list[str] | None = None,
+        console_messages: list[ConsoleMessage] | None = None,
         final_url: str = "",
         status_code: int = 0,
         elapsed_s: float = 0.0,
@@ -135,6 +183,7 @@ class RenderResult(str):
         """Construct a RenderResult; ``_raw`` is internal (Rust output object)."""
         instance = super().__new__(cls, html)
         instance.errors = errors or []
+        instance.console_messages = console_messages or []
         instance.final_url = final_url
         instance.status_code = status_code
         instance.elapsed_s = elapsed_s
@@ -180,23 +229,18 @@ class FetchResult:
 
     def __init__(self, raw: _FetchOutput) -> None:
         self._raw = raw
-        # _FetchOutput has `.make_dom()` just like _RenderOutput — duck-typing
-        # lets RenderResult.dom use either raw object.
-        self.html = RenderResult(
-            raw.html,
-            errors=raw.errors,
-            final_url=raw.final_url,
-            status_code=raw.status_code,
-            elapsed_s=raw.elapsed_s,
-            _raw=raw,
-        )
+        self.html = _make_render_result(raw)
         self.png = bytes(raw.png)
 
     @property
     def errors(self) -> list[str]:
-        """Console errors and load errors collected during the page visit."""
-        # _FetchOutput is a Rust pyclass; mypy can't see its attribute types.
-        return self._raw.errors  # type: ignore[no-any-return]
+        """Error texts (derived from ``console_messages``)."""
+        return self.html.errors
+
+    @property
+    def console_messages(self) -> list[ConsoleMessage]:
+        """All captured ``console.*`` events, structured."""
+        return self.html.console_messages
 
     @property
     def final_url(self) -> str:
@@ -356,15 +400,7 @@ class Client:
         """Fetch URL, return fully-rendered HTML post-JS."""
         fc = _merge_fetch_config(config, overrides)
         _client_log.debug("fetch: %s", url)
-        raw = self._rust.fetch(url, fc.model_dump())
-        return RenderResult(
-            raw.html,
-            errors=raw.errors,
-            final_url=raw.final_url,
-            status_code=raw.status_code,
-            elapsed_s=raw.elapsed_s,
-            _raw=raw,
-        )
+        return _make_render_result(self._rust.fetch(url, fc.model_dump()))
 
     def screenshot(
         self,
@@ -430,17 +466,7 @@ class Client:
         raws = self._rust.batch(url_list, capture, fc.model_dump())
         results: list[RenderResult | FetchResult | bytes]
         if capture == "html":
-            results = [
-                RenderResult(
-                    r.html,
-                    errors=r.errors,
-                    final_url=r.final_url,
-                    status_code=r.status_code,
-                    elapsed_s=r.elapsed_s,
-                    _raw=r,
-                )
-                for r in raws
-            ]
+            results = [_make_render_result(r) for r in raws]
         elif capture == "png":
             results = [bytes(b) for b in raws]
         else:
@@ -695,15 +721,7 @@ class AsyncClient:
         """
         fc = _merge_fetch_config(config, overrides)
         _client_log.debug("afetch: %s", url)
-        raw = await self._rust.fetch_async(url, fc.model_dump())
-        return RenderResult(
-            raw.html,
-            errors=raw.errors,
-            final_url=raw.final_url,
-            status_code=raw.status_code,
-            elapsed_s=raw.elapsed_s,
-            _raw=raw,
-        )
+        return _make_render_result(await self._rust.fetch_async(url, fc.model_dump()))
 
     async def screenshot(
         self,
@@ -808,17 +826,7 @@ class AsyncClient:
         raws = await self._rust.batch_async(url_list, capture, fc.model_dump())
         results: list[RenderResult | FetchResult | bytes]
         if capture == "html":
-            results = [
-                RenderResult(
-                    r.html,
-                    errors=r.errors,
-                    final_url=r.final_url,
-                    status_code=r.status_code,
-                    elapsed_s=r.elapsed_s,
-                    _raw=r,
-                )
-                for r in raws
-            ]
+            results = [_make_render_result(r) for r in raws]
         elif capture == "png":
             results = [bytes(b) for b in raws]
         else:
@@ -1088,6 +1096,9 @@ def _flat_kwargs_to_partial(kwargs: dict[str, Any]) -> dict[str, Any]:
             continue
         if k == "wait_after_ms":
             out["wait_after_ms"] = v
+            continue
+        if k == "capture_console_level":
+            out["capture_console_level"] = v
             continue
         if k not in _FLAT_KWARG_MAP:
             raise TypeError(f"unknown ClientConfig kwarg: {k!r}")
