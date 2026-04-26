@@ -213,3 +213,40 @@ async def test_async_block_navigation_cleanup(httpserver: HTTPServer) -> None:
         r2 = await ac.fetch(httpserver.url_for("/two"))
 
     assert "PAGE_TWO_ASYNC" in r2
+
+
+# ----------------------------------------------------------------------------
+# Behavioral guarantee surfaced by the Phase 4 adversarial review:
+# block_navigation must intercept ONLY the navigation request — every
+# subresource (image, stylesheet, script, fetch/XHR) must still reach the
+# server. The implementation uses a Document-only Fetch.enable pattern; the
+# listener never sees subresource requests at all.
+# ----------------------------------------------------------------------------
+
+
+def test_block_navigation_doesnt_block_subresources(httpserver: HTTPServer) -> None:
+    """With ``block_navigation=True``, image / script / fetch / CSS-bg
+    subresources MUST still reach the server — only navigation is aborted."""
+    httpserver.expect_request("/").respond_with_data(
+        "<html><body>"
+        "<img id='i' src='/asset.png' />"
+        "<script src='/asset.js'></script>"
+        "<style>body { background: url('/bg.png'); }</style>"
+        "<script>fetch('/api/data', {mode: 'no-cors'}).catch(() => {});</script>"
+        "</body></html>",
+        content_type="text/html",
+    )
+    httpserver.expect_request("/asset.png").respond_with_data(b"\x89PNG")
+    httpserver.expect_request("/asset.js").respond_with_data("/* js */")
+    httpserver.expect_request("/bg.png").respond_with_data(b"\x89PNG")
+    httpserver.expect_request("/api/data").respond_with_data('{"ok": true}')
+
+    with blazeweb.Client() as c:
+        c.fetch(httpserver.url_for("/"), block_navigation=True, wait_after_ms=400)
+
+    paths = {req.path for req, _ in httpserver.log}
+    # All subresources must have hit the server.
+    for required in ("/asset.png", "/asset.js", "/bg.png", "/api/data"):
+        assert required in paths, (
+            f"subresource {required} blocked by block_navigation; got paths={paths}"
+        )

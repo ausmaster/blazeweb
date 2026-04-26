@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::fetch::{
-    ContinueRequestParams, DisableParams as FetchDisableParams, EnableParams as FetchEnableParams,
-    EventRequestPaused, FailRequestParams,
+    DisableParams as FetchDisableParams, EnableParams as FetchEnableParams, EventRequestPaused,
+    FailRequestParams, RequestPattern,
 };
 use chromiumoxide::cdp::browser_protocol::network::{
     ErrorReason, ResourceType, SetBlockedUrLsParams, SetExtraHttpHeadersParams,
@@ -238,14 +238,21 @@ pub async fn capture_page(
 
         // Per-call navigation blocking — arm AFTER the initial load + settle
         // so the original page is reachable, but BEFORE actions so any
-        // JS-driven navigation they trigger is intercepted. Cleanup
-        // (``Fetch.disable``) runs unconditionally below.
+        // JS-driven navigation they trigger is intercepted. Filter at the
+        // Fetch.enable layer (resource_type=Document) so subresources never
+        // fire ``Fetch.requestPaused`` — they go through chromium's normal
+        // path with zero CDP overhead. Cleanup (``Fetch.disable``) runs
+        // unconditionally below.
         if per_call.block_navigation {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] block_navigation: enabling Fetch interception"
+                "[{url}] block_navigation: enabling Fetch interception (Document only)"
             );
-            page.execute(FetchEnableParams::default()).await?;
+            let document_only = RequestPattern::builder()
+                .resource_type(ResourceType::Document)
+                .build();
+            page.execute(FetchEnableParams::builder().pattern(document_only).build())
+                .await?;
             let mut paused_stream = page
                 .event_listener::<EventRequestPaused>()
                 .await
@@ -253,18 +260,14 @@ pub async fn capture_page(
             let page_for_task = page.clone();
             tokio::spawn(async move {
                 while let Some(evt) = paused_stream.next().await {
-                    if matches!(evt.resource_type, ResourceType::Document) {
-                        let _ = page_for_task
-                            .execute(FailRequestParams::new(
-                                evt.request_id.clone(),
-                                ErrorReason::Aborted,
-                            ))
-                            .await;
-                    } else {
-                        let _ = page_for_task
-                            .execute(ContinueRequestParams::new(evt.request_id.clone()))
-                            .await;
-                    }
+                    // Pattern guarantees only Document-type requests reach
+                    // us; abort each.
+                    let _ = page_for_task
+                        .execute(FailRequestParams::new(
+                            evt.request_id.clone(),
+                            ErrorReason::Aborted,
+                        ))
+                        .await;
                 }
             });
         }
