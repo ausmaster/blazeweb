@@ -249,6 +249,9 @@ pub struct FetchConfigRs {
     pub block_urls: Vec<String>,
     /// Post-load actions — Click variants (more in later phases).
     pub actions: Vec<ActionRs>,
+    /// When true, intercept navigation requests AFTER initial load via
+    /// ``Fetch.requestPaused`` and fail them. Cleaned up before pool return.
+    pub block_navigation: bool,
     pub timeout_ms: Option<u64>,
     /// Per-call override. None = inherit client default.
     pub wait_until: Option<WaitUntil>,
@@ -357,6 +360,11 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
             for item in list.iter() {
                 cfg.actions.push(parse_action(&item)?);
             }
+        }
+        if let Some(v) = d.get_item("block_navigation")?
+            && !v.is_none()
+        {
+            cfg.block_navigation = v.extract().map_err(to_internal)?;
         }
         if let Some(v) = d.get_item("timeout_ms")?
             && !v.is_none()

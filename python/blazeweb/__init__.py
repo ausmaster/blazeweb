@@ -946,6 +946,7 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
     for k, v in overrides.items():
         if k not in {
             "actions",
+            "block_navigation",
             "block_urls",
             "extra_headers",
             "scripts",
