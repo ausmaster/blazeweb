@@ -269,6 +269,19 @@ pub async fn capture_page(
             });
         }
 
+        // Per-call post-load scripts — run arbitrary JS on the fully-loaded
+        // page via Runtime.evaluate. Single CDP roundtrip per script. The
+        // primary primitive for "do JS work on the loaded page" use cases
+        // (see CLAUDE.md "Public Python surface").
+        for src in &per_call.post_load_scripts {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] post_load_script ({} chars)",
+                src.len()
+            );
+            page.evaluate(src.as_str()).await?;
+        }
+
         // Run post-load actions BEFORE HTML capture so the captured DOM
         // reflects post-action state (and a Click that triggers nav still
         // gets a final_url update from the response listener).

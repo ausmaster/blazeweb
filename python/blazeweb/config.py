@@ -471,7 +471,27 @@ class FetchConfig(BaseModel):
     string is a complete script body; it runs before any page-side script.
     Stacks on top of any Client-level ``scripts.on_new_document``. Removed
     after capture so they don't leak to subsequent fetches on the same
-    pooled tab."""
+    pooled tab. Use this for detector implants, environment setup, or
+    anything that must run before page scripts. For "do JS work on the
+    fully-loaded page" use ``post_load_scripts`` instead."""
+
+    post_load_scripts: list[str] = Field(default_factory=list)
+    """JavaScript snippets to run via ``page.evaluate(src)`` AFTER the
+    lifecycle event and any ``wait_after_ms`` settle, AFTER any
+    ``block_navigation`` arms, BEFORE the ``actions`` list, BEFORE HTML
+    capture. Each entry runs once on the fully-loaded page with full
+    DOM access — single CDP roundtrip per script.
+
+    This is the primary primitive for "click everything matching a
+    selector" / "fill form and submit" / "post a message" flows. For
+    most use cases it's simpler and faster than ``actions`` (which is
+    pre-batched CDP-trusted dispatch — needed only when
+    ``event.isTrusted === true`` is required, e.g., bot-detection
+    evasion).
+
+    Verified: synthetic JS-side ``element.click()`` executes
+    ``href="javascript:..."`` URLs and fires ``onclick`` handlers in
+    modern Chrome — no need for trusted-events to make those work."""
 
     block_urls: list[str] = Field(default_factory=list)
     """URL patterns to block at the network layer for this call. Additive
