@@ -42,9 +42,12 @@ from blazeweb._blazeweb import (
 from blazeweb._logging import configure as _configure_logging, logger, set_log_level
 from blazeweb.config import (
     ChromeConfig,
+    Click,
     ClientConfig,
     EmulationConfig,
     FetchConfig,
+    Fill,
+    Hover,
     NetworkConfig,
     ScreenshotConfig,
     ScriptsConfig,
@@ -52,6 +55,7 @@ from blazeweb.config import (
     UserAgentBrandVersion,
     UserAgentMetadata,
     ViewportConfig,
+    Wait,
 )
 
 # Configure Python-side logging at import from BLAZEWEB_LOG (defaults "warn").
@@ -71,12 +75,16 @@ __all__ = [
     "afetch_all",
     # Classes
     "AsyncClient",
+    "Click",
     "Client",
     "ConsoleMessage",
     "Dom",
     "Element",
     "FetchResult",
+    "Fill",
+    "Hover",
     "RenderResult",
+    "Wait",
     # Configs (re-exported from blazeweb.config)
     "ClientConfig",
     "FetchConfig",
@@ -937,6 +945,7 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
     data: dict[str, Any] = base.model_dump() if base else {}
     for k, v in overrides.items():
         if k not in {
+            "actions",
             "block_urls",
             "extra_headers",
             "scripts",

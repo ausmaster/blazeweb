@@ -194,6 +194,47 @@ impl Default for ClientConfigRs {
 // Per-call overrides
 // ----------------------------------------------------------------------------
 
+/// Failure policy for a selector-targeted action. Wait has no policy
+/// because a sleep can't fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActionErrorPolicy {
+    /// Record the error in ``RenderResult.errors`` and continue.
+    #[default]
+    Continue,
+    /// Propagate the error and short-circuit the fetch.
+    Abort,
+    /// Silently skip; no error recorded.
+    Ignore,
+}
+
+/// One post-load action — runs after the lifecycle event and any
+/// ``wait_after_ms`` settle, before HTML capture. Mirrors the
+/// pydantic discriminated union on the Python side.
+#[derive(Debug, Clone)]
+pub enum ActionRs {
+    /// CDP-trusted mouse click on the element matched by ``selector``.
+    Click {
+        selector: String,
+        wait_after_ms: u64,
+        on_error: ActionErrorPolicy,
+    },
+    /// Set the input/textarea's value, fire bubbling input/change events.
+    Fill {
+        selector: String,
+        value: String,
+        wait_after_ms: u64,
+        on_error: ActionErrorPolicy,
+    },
+    /// CDP-trusted mouse hover (``mouseMoved``) over the matched element.
+    Hover {
+        selector: String,
+        wait_after_ms: u64,
+        on_error: ActionErrorPolicy,
+    },
+    /// Sleep ``duration_ms`` in the action sequence.
+    Wait { duration_ms: u64 },
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FetchConfigRs {
     pub extra_headers: HashMap<String, String>,
@@ -206,6 +247,8 @@ pub struct FetchConfigRs {
     /// ``Network.setBlockedURLs`` before navigation; base is restored
     /// after capture so per-call entries don't leak.
     pub block_urls: Vec<String>,
+    /// Post-load actions — Click variants (more in later phases).
+    pub actions: Vec<ActionRs>,
     pub timeout_ms: Option<u64>,
     /// Per-call override. None = inherit client default.
     pub wait_until: Option<WaitUntil>,
@@ -305,6 +348,16 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
         if let Some(v) = d.get_item("block_urls")? {
             cfg.block_urls = v.extract().map_err(to_internal)?;
         }
+        if let Some(v) = d.get_item("actions")?
+            && !v.is_none()
+        {
+            let list = v
+                .downcast::<PyList>()
+                .map_err(|_| BlazeError::InvalidConfig("actions: expected list".to_string()))?;
+            for item in list.iter() {
+                cfg.actions.push(parse_action(&item)?);
+            }
+        }
         if let Some(v) = d.get_item("timeout_ms")?
             && !v.is_none()
         {
@@ -384,6 +437,94 @@ fn parse_wait_until(v: &Bound<'_, PyAny>) -> Result<WaitUntil> {
         "load" => Ok(WaitUntil::Load),
         other => Err(BlazeError::InvalidConfig(format!(
             "unknown wait_until {other:?}; expected 'domcontentloaded' or 'load'"
+        ))),
+    }
+}
+
+/// Parse one element of ``FetchConfig.actions`` (a pydantic-dumped dict)
+/// into the matching `ActionRs` variant. The ``type`` field is the
+/// discriminator.
+fn parse_action(v: &Bound<'_, PyAny>) -> Result<ActionRs> {
+    let d = v
+        .downcast::<PyDict>()
+        .map_err(|_| BlazeError::InvalidConfig("action: expected dict".to_string()))?;
+    let type_str: String = d
+        .get_item("type")
+        .map_err(to_internal)?
+        .ok_or_else(|| BlazeError::InvalidConfig("action: missing 'type'".to_string()))?
+        .extract()
+        .map_err(to_internal)?;
+    match type_str.as_str() {
+        "click" => Ok(ActionRs::Click {
+            selector: action_required_string(d, "selector", "Click")?,
+            wait_after_ms: action_wait_after_ms(d)?,
+            on_error: action_on_error(d)?,
+        }),
+        "fill" => Ok(ActionRs::Fill {
+            selector: action_required_string(d, "selector", "Fill")?,
+            value: action_required_string(d, "value", "Fill")?,
+            wait_after_ms: action_wait_after_ms(d)?,
+            on_error: action_on_error(d)?,
+        }),
+        "hover" => Ok(ActionRs::Hover {
+            selector: action_required_string(d, "selector", "Hover")?,
+            wait_after_ms: action_wait_after_ms(d)?,
+            on_error: action_on_error(d)?,
+        }),
+        "wait" => {
+            let duration_ms: u64 = d
+                .get_item("duration_ms")
+                .map_err(to_internal)?
+                .ok_or_else(|| {
+                    BlazeError::InvalidConfig("Wait: missing 'duration_ms'".to_string())
+                })?
+                .extract()
+                .map_err(to_internal)?;
+            Ok(ActionRs::Wait { duration_ms })
+        }
+        other => Err(BlazeError::InvalidConfig(format!(
+            "unknown action type {other:?}"
+        ))),
+    }
+}
+
+/// Extract a required string field from an action dict. Errors include
+/// the action name to make the failure self-describing.
+fn action_required_string(d: &Bound<'_, PyDict>, key: &str, action: &str) -> Result<String> {
+    d.get_item(key)
+        .map_err(to_internal)?
+        .ok_or_else(|| BlazeError::InvalidConfig(format!("{action}: missing '{key}'")))?
+        .extract()
+        .map_err(to_internal)
+}
+
+/// Extract the optional ``wait_after_ms`` field from an action dict
+/// (defaults to 0 when absent).
+fn action_wait_after_ms(d: &Bound<'_, PyDict>) -> Result<u64> {
+    d.get_item("wait_after_ms")
+        .map_err(to_internal)?
+        .map(|v| v.extract::<u64>())
+        .transpose()
+        .map_err(to_internal)
+        .map(|opt| opt.unwrap_or(0))
+}
+
+/// Extract the optional ``on_error`` field from an action dict
+/// (defaults to ``ActionErrorPolicy::Continue`` when absent).
+fn action_on_error(d: &Bound<'_, PyDict>) -> Result<ActionErrorPolicy> {
+    let Some(v) = d.get_item("on_error").map_err(to_internal)? else {
+        return Ok(ActionErrorPolicy::default());
+    };
+    if v.is_none() {
+        return Ok(ActionErrorPolicy::default());
+    }
+    let s: String = v.extract().map_err(to_internal)?;
+    match s.as_str() {
+        "continue" => Ok(ActionErrorPolicy::Continue),
+        "abort" => Ok(ActionErrorPolicy::Abort),
+        "ignore" => Ok(ActionErrorPolicy::Ignore),
+        other => Err(BlazeError::InvalidConfig(format!(
+            "unknown on_error {other:?}; expected continue|abort|ignore"
         ))),
     }
 }

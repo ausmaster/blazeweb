@@ -18,10 +18,51 @@ use chromiumoxide::cdp::browser_protocol::page::{
 };
 use futures::StreamExt;
 
-use crate::config::{ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs, WaitUntil};
+use crate::config::{
+    ActionErrorPolicy, ActionRs, ClientConfigRs, FetchConfigRs, ImageFormat, ScreenshotConfigRs,
+    WaitUntil,
+};
 use crate::error::{BlazeError, Result};
 use crate::pool::{PageGuard, block_patterns};
 use crate::result::ConsoleMessageRs;
+
+/// Apply an action's failure policy. Returns ``Ok(true)`` if the action
+/// succeeded (caller should run any post-action wait), ``Ok(false)`` if it
+/// failed but the policy said to continue/ignore, or ``Err`` to propagate
+/// (policy=Abort).
+fn handle_action_result(
+    res: Result<()>,
+    policy: ActionErrorPolicy,
+    guard: &PageGuard,
+    action_name: &str,
+    selector: &str,
+) -> Result<bool> {
+    match res {
+        Ok(()) => Ok(true),
+        Err(e) => match policy {
+            ActionErrorPolicy::Abort => Err(e),
+            ActionErrorPolicy::Continue => {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                guard.console_messages().lock().push(ConsoleMessageRs {
+                    kind: "error".to_string(),
+                    text: format!("Action {action_name}({selector}) failed: {e}"),
+                    timestamp,
+                });
+                Ok(false)
+            }
+            ActionErrorPolicy::Ignore => {
+                log::debug!(
+                    target: "blazeweb::engine",
+                    "action {action_name}({selector}) ignored error: {e}"
+                );
+                Ok(false)
+            }
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
@@ -189,6 +230,80 @@ pub async fn capture_page(
         if wait_after_ms > 0 {
             log::trace!(target: "blazeweb::engine", "[{url}] settle {wait_after_ms}ms");
             tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
+        }
+
+        // Run post-load actions BEFORE HTML capture so the captured DOM
+        // reflects post-action state (and a Click that triggers nav still
+        // gets a final_url update from the response listener).
+        for action in &per_call.actions {
+            match action {
+                ActionRs::Click {
+                    selector,
+                    wait_after_ms: w,
+                    on_error,
+                } => {
+                    log::trace!(target: "blazeweb::engine", "[{url}] click action: {selector}");
+                    let res = async {
+                        let element = page.find_element(selector).await?;
+                        element.click().await?;
+                        Ok::<_, BlazeError>(())
+                    }
+                    .await;
+                    let ok = handle_action_result(res, *on_error, guard, "click", selector)?;
+                    if ok && *w > 0 {
+                        tokio::time::sleep(Duration::from_millis(*w)).await;
+                    }
+                }
+                ActionRs::Fill {
+                    selector,
+                    value,
+                    wait_after_ms: w,
+                    on_error,
+                } => {
+                    log::trace!(target: "blazeweb::engine", "[{url}] fill action: {selector}");
+                    let res = async {
+                        let element = page.find_element(selector).await?;
+                        let value_js = serde_json::to_string(value)
+                            .map_err(|e| BlazeError::Internal(format!("fill value: {e}")))?;
+                        let fn_src = format!(
+                            "function() {{ \
+                                this.focus(); \
+                                this.value = {value_js}; \
+                                this.dispatchEvent(new Event('input', {{bubbles: true}})); \
+                                this.dispatchEvent(new Event('change', {{bubbles: true}})); \
+                            }}"
+                        );
+                        element.call_js_fn(fn_src, false).await?;
+                        Ok::<_, BlazeError>(())
+                    }
+                    .await;
+                    let ok = handle_action_result(res, *on_error, guard, "fill", selector)?;
+                    if ok && *w > 0 {
+                        tokio::time::sleep(Duration::from_millis(*w)).await;
+                    }
+                }
+                ActionRs::Hover {
+                    selector,
+                    wait_after_ms: w,
+                    on_error,
+                } => {
+                    log::trace!(target: "blazeweb::engine", "[{url}] hover action: {selector}");
+                    let res = async {
+                        let element = page.find_element(selector).await?;
+                        element.hover().await?;
+                        Ok::<_, BlazeError>(())
+                    }
+                    .await;
+                    let ok = handle_action_result(res, *on_error, guard, "hover", selector)?;
+                    if ok && *w > 0 {
+                        tokio::time::sleep(Duration::from_millis(*w)).await;
+                    }
+                }
+                ActionRs::Wait { duration_ms } => {
+                    log::trace!(target: "blazeweb::engine", "[{url}] wait action: {duration_ms}ms");
+                    tokio::time::sleep(Duration::from_millis(*duration_ms)).await;
+                }
+            }
         }
 
         let final_url = page
