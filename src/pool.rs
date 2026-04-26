@@ -408,13 +408,10 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             }
         });
 
-        // Page.javascriptDialogOpening — auto-dismiss every native dialog
-        // (alert / confirm / prompt / beforeunload). Without this, any
-        // page that calls one of these blocks the lifecycle event waiting
-        // for a UI dismissal that will never come, hanging the fetch.
-        // ``accept=false`` means: ``alert`` returns undefined, ``confirm``
-        // returns false, ``prompt`` returns null, ``beforeunload`` doesn't
-        // block the navigation. Mirrors Playwright/Selenium defaults.
+        // Page.javascriptDialogOpening — auto-dismiss native dialogs
+        // (alert/confirm/prompt/beforeunload). Without this, any page
+        // that calls these blocks the lifecycle event waiting for a UI
+        // dismissal that never comes. Mirrors Playwright/Selenium defaults.
         let page_for_dialogs = page.clone();
         let mut dialog_stream = page
             .event_listener::<EventJavascriptDialogOpening>()
