@@ -8,8 +8,12 @@
 use std::time::{Duration, Instant};
 
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::cdp::browser_protocol::fetch::{
+    ContinueRequestParams, DisableParams as FetchDisableParams, EnableParams as FetchEnableParams,
+    EventRequestPaused, FailRequestParams,
+};
 use chromiumoxide::cdp::browser_protocol::network::{
-    SetBlockedUrLsParams, SetExtraHttpHeadersParams,
+    ErrorReason, ResourceType, SetBlockedUrLsParams, SetExtraHttpHeadersParams,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     AddScriptToEvaluateOnNewDocumentParams, CaptureScreenshotFormat, CaptureScreenshotParams,
@@ -232,6 +236,39 @@ pub async fn capture_page(
             tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
         }
 
+        // Per-call navigation blocking — arm AFTER the initial load + settle
+        // so the original page is reachable, but BEFORE actions so any
+        // JS-driven navigation they trigger is intercepted. Cleanup
+        // (``Fetch.disable``) runs unconditionally below.
+        if per_call.block_navigation {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] block_navigation: enabling Fetch interception"
+            );
+            page.execute(FetchEnableParams::default()).await?;
+            let mut paused_stream = page
+                .event_listener::<EventRequestPaused>()
+                .await
+                .map_err(BlazeError::from)?;
+            let page_for_task = page.clone();
+            tokio::spawn(async move {
+                while let Some(evt) = paused_stream.next().await {
+                    if matches!(evt.resource_type, ResourceType::Document) {
+                        let _ = page_for_task
+                            .execute(FailRequestParams::new(
+                                evt.request_id.clone(),
+                                ErrorReason::Aborted,
+                            ))
+                            .await;
+                    } else {
+                        let _ = page_for_task
+                            .execute(ContinueRequestParams::new(evt.request_id.clone()))
+                            .await;
+                    }
+                }
+            });
+        }
+
         // Run post-load actions BEFORE HTML capture so the captured DOM
         // reflects post-action state (and a Click that triggers nav still
         // gets a final_url update from the response listener).
@@ -395,6 +432,13 @@ pub async fn capture_page(
                 url_patterns: Some(block_patterns(&base.network.block_urls)),
             })
             .await;
+    }
+
+    // Per-call navigation-block cleanup — disable the Fetch domain so the
+    // listener task's stream ends and any future fetches on this tab aren't
+    // intercepted. CDP auto-continues paused requests on disable.
+    if per_call.block_navigation {
+        let _ = page.execute(FetchDisableParams::default()).await;
     }
 
     // On error, reset the page so the next URL on this tab isn't poisoned by

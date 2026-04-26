@@ -491,6 +491,17 @@ class FetchConfig(BaseModel):
     ``change`` events for framework reactivity; Wait sleeps the action
     loop."""
 
+    block_navigation: bool = False
+    """When True, post-load navigation (JS-driven ``location.href``,
+    ``window.open`` of self, target=_blank clicks, etc.) is intercepted
+    and aborted via CDP ``Fetch.requestPaused``. The page stays on its
+    current URL through the action sequence and HTML capture. The
+    initial page load is NOT affected — the listener arms AFTER the
+    lifecycle event. Used by DOMino's ``ClickJSElements`` to click
+    multiple ``[href^="javascript:"]`` links on the same page state.
+    Cleanup disables the Fetch domain before the page returns to the
+    pool."""
+
     timeout_ms: int | None = Field(None, ge=100)
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)
