@@ -10,7 +10,7 @@ All knobs live under ``ClientConfig``. Pydantic-settings auto-loads from env
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -354,6 +354,106 @@ class ClientConfig(BaseSettings):
         return cls(**top)
 
 
+class _SelectorActionBase(BaseModel):
+    """Internal base for selector-targeted actions (Click, Fill, Hover).
+
+    Centralizes the four fields they all share so each subclass only
+    declares its discriminator and any unique inputs. ``Wait`` is NOT a
+    subclass — it has a different shape (no selector, no on_error).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    selector: str
+    wait_after_ms: int = Field(0, ge=0, le=60000)
+    on_error: Literal["continue", "abort", "ignore"] = "continue"
+    """Failure policy for this action.
+
+    - ``"continue"`` (default) — record the error in
+      ``RenderResult.errors`` (and ``console_messages``); subsequent
+      actions still run. Right default for batch automation where partial
+      failures should be reported, not crash the run.
+    - ``"abort"`` — raise ``RuntimeError`` and short-circuit the fetch.
+    - ``"ignore"`` — silently skip; no error recorded. Useful when an
+      action is best-effort (e.g., closing a cookie banner that may not
+      be present).
+    """
+
+
+class Click(_SelectorActionBase):
+    """Trusted CDP mouse click on the element matched by ``selector``.
+
+    Dispatched via ``Input.dispatchMouseEvent`` so handlers see
+    ``event.isTrusted === true`` — the difference vs page-side
+    ``element.click()`` matters for pages that gate on user-action
+    semantics (form submission, ``<a href="javascript:...">`` execution).
+
+    Attributes:
+        type: Discriminator literal ``"click"``.
+        selector: CSS selector resolving to the target element.
+        wait_after_ms: Sleep after the click, milliseconds.
+        on_error: Failure policy (continue / abort / ignore).
+    """
+
+    type: Literal["click"] = "click"
+
+
+class Fill(_SelectorActionBase):
+    """Set the value of an input/textarea matched by ``selector``.
+
+    Replaces any existing value (does not append). Fires bubbling
+    ``input`` and ``change`` events so framework reactivity sees the
+    change. Dispatched via JS, so the events themselves carry
+    ``isTrusted === false`` — this is fine for value handoff and form
+    submission. Form submit semantics (``submit`` event from a Click on
+    the submit button) ARE trusted because the click that triggers them
+    is dispatched via CDP.
+
+    Attributes:
+        type: Discriminator literal ``"fill"``.
+        selector: CSS selector for the input/textarea.
+        value: String to set as the element's ``.value``.
+        wait_after_ms: Sleep after the fill, milliseconds.
+        on_error: Failure policy (continue / abort / ignore).
+    """
+
+    type: Literal["fill"] = "fill"
+    value: str
+
+
+class Hover(_SelectorActionBase):
+    """Trusted CDP mouse hover (``mouseMoved``) over the matched element.
+
+    Fires ``mouseover`` / ``mouseenter`` handlers with
+    ``event.isTrusted === true``. Useful for revealing dropdown menus,
+    triggering hover-only UI state, etc.
+
+    Attributes:
+        type: Discriminator literal ``"hover"``.
+        selector: CSS selector for the target element.
+        wait_after_ms: Sleep after the hover, milliseconds.
+        on_error: Failure policy (continue / abort / ignore).
+    """
+
+    type: Literal["hover"] = "hover"
+
+
+class Wait(BaseModel):
+    """Sleep for ``duration_ms`` milliseconds in the action sequence.
+
+    Useful between actions when the page does async work that the next
+    action depends on (e.g., a fade-in animation that mounts the next
+    button into the DOM).
+
+    Attributes:
+        type: Discriminator literal ``"wait"``.
+        duration_ms: Sleep duration, milliseconds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["wait"] = "wait"
+    duration_ms: int = Field(..., ge=0, le=60000)
+
+
 class FetchConfig(BaseModel):
     """Per-call override for ``Client.fetch()`` / ``fetch_all()``.
 
@@ -380,6 +480,16 @@ class FetchConfig(BaseModel):
     wildcards). Restored to the Client-level base list after capture so
     the per-call block doesn't leak to subsequent fetches on the same
     pooled tab."""
+
+    actions: list[
+        Annotated[Click | Fill | Hover | Wait, Field(discriminator="type")]
+    ] = Field(default_factory=list)
+    """Post-load actions to run after the lifecycle event and any
+    ``wait_after_ms`` settle, before HTML capture. Click and Hover
+    dispatch CDP-trusted mouse events (``Input.dispatchMouseEvent``);
+    Fill sets the element's ``.value`` and fires synthetic ``input`` /
+    ``change`` events for framework reactivity; Wait sleeps the action
+    loop."""
 
     timeout_ms: int | None = Field(None, ge=100)
     wait_until: Literal["domcontentloaded", "load"] | None = None
