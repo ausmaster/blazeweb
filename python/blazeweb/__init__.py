@@ -949,6 +949,7 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
             "block_navigation",
             "block_urls",
             "extra_headers",
+            "post_load_scripts",
             "scripts",
             "timeout_ms",
             "wait_until",

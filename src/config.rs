@@ -242,6 +242,12 @@ pub struct FetchConfigRs {
     /// ``Page.addScriptToEvaluateOnNewDocument`` BEFORE navigation; removed
     /// after capture so they don't leak to subsequent fetches.
     pub scripts: Vec<String>,
+    /// Per-call post-load scripts. Run via ``page.evaluate(src)`` AFTER
+    /// lifecycle event + ``wait_after_ms``, AFTER block_navigation arms,
+    /// BEFORE the actions list, BEFORE HTML capture. Single CDP roundtrip
+    /// per script. The primary primitive for DOMino-style "do JS work on
+    /// the loaded page" use cases.
+    pub post_load_scripts: Vec<String>,
     /// Per-call URL patterns to block at the network layer. Merged with
     /// ``base.network.block_urls`` and applied via
     /// ``Network.setBlockedURLs`` before navigation; base is restored
@@ -347,6 +353,9 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
         }
         if let Some(v) = d.get_item("scripts")? {
             cfg.scripts = v.extract().map_err(to_internal)?;
+        }
+        if let Some(v) = d.get_item("post_load_scripts")? {
+            cfg.post_load_scripts = v.extract().map_err(to_internal)?;
         }
         if let Some(v) = d.get_item("block_urls")? {
             cfg.block_urls = v.extract().map_err(to_internal)?;
