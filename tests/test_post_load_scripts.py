@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 
 import blazeweb
+import pytest
 
 # ----------------------------------------------------------------------------
 # TDD #1: post_load_scripts runs after lifecycle, has DOM access
@@ -234,3 +235,86 @@ async def test_async_synthetic_click_loop_via_post_load_script() -> None:
         )
 
     assert any("ASYNC_JS_URL_FIRED" in m.text for m in r.console_messages)
+
+
+# ----------------------------------------------------------------------------
+# Behavioral guarantees worth nailing down (added during Phase 4.5
+# adversarial review — these gaps weren't covered by cycles 1-3 and would
+# have silently bitten DOMino's port).
+# ----------------------------------------------------------------------------
+
+
+def test_post_load_script_async_iife_is_awaited() -> None:
+    """``page.evaluate`` awaits a Promise returned by an async IIFE. This is
+    load-bearing for DOMino's wait-between-clicks pattern: the JS-ported
+    equivalent uses ``await new Promise(r => setTimeout(r, 500))`` between
+    clicks. If the await didn't honor the promise, capture would race ahead
+    and miss async XSS findings."""
+    html = b"<html><body><div id='target'>before</div></body></html>"
+    url = "data:text/html;base64," + base64.b64encode(html).decode()
+
+    async_pls = """
+    (async () => {
+        await new Promise(r => setTimeout(r, 500));
+        document.getElementById('target').setAttribute('data-mark', 'AWAITED');
+    })();
+    """
+
+    with blazeweb.Client() as c:
+        r = c.fetch(url, post_load_scripts=[async_pls])
+
+    assert 'data-mark="AWAITED"' in r, (
+        "page.evaluate did NOT await the async IIFE — the post-load timeout "
+        "fired and capture happened before the script's async work completed. "
+        f"html: {r[:300]}"
+    )
+
+
+def test_post_load_script_uncaught_exception_aborts_fetch() -> None:
+    """An uncaught synchronous exception in a post_load_script propagates as
+    RuntimeError, aborting the fetch. Documents the current contract — JS
+    errors are NOT swallowed; users must try/catch their own JS to get
+    continue-on-error semantics."""
+    html = b"<html><body>page</body></html>"
+    url = "data:text/html;base64," + base64.b64encode(html).decode()
+
+    with blazeweb.Client() as c, pytest.raises(RuntimeError, match="PLS_THREW"):
+        c.fetch(url, post_load_scripts=["throw new Error('PLS_THREW')"])
+
+
+def test_post_load_script_async_exception_also_aborts_fetch() -> None:
+    """Uncaught Promise rejections from an async IIFE also abort the fetch.
+    Same contract as sync exceptions."""
+    html = b"<html><body>page</body></html>"
+    url = "data:text/html;base64," + base64.b64encode(html).decode()
+
+    with blazeweb.Client() as c, pytest.raises(RuntimeError, match="ASYNC_THREW"):
+        c.fetch(
+            url,
+            post_load_scripts=["(async () => { throw new Error('ASYNC_THREW') })()"],
+        )
+
+
+def test_post_load_script_caught_exception_does_not_abort() -> None:
+    """If user wraps in try/catch, the fetch proceeds normally — this is the
+    pattern users adopt for continue-on-error semantics."""
+    html = b"<html><body>page</body></html>"
+    url = "data:text/html;base64," + base64.b64encode(html).decode()
+
+    safe_pls = """
+    try {
+        document.querySelectorAll('[onclick]').forEach(el => {
+            try { el.click(); }
+            catch (e) { console.error('per_click_error: ' + e.message); }
+        });
+    } catch (e) {
+        console.error('outer_error: ' + e.message);
+    }
+    """
+
+    with blazeweb.Client() as c:
+        # Page has no [onclick] elements — loop is a no-op, no error.
+        r = c.fetch(url, post_load_scripts=[safe_pls])
+
+    assert isinstance(r, blazeweb.RenderResult)
+    assert "page" in r
