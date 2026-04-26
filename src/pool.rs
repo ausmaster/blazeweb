@@ -298,6 +298,9 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
     let level = base.capture_console_level;
     {
         use chromiumoxide::cdp::browser_protocol::network::{EventResponseReceived, ResourceType};
+        use chromiumoxide::cdp::browser_protocol::page::{
+            EventJavascriptDialogOpening, HandleJavaScriptDialogParams,
+        };
         use chromiumoxide::cdp::js_protocol::runtime::{
             ConsoleApiCalledType, EventConsoleApiCalled, EventExceptionThrown,
         };
@@ -402,6 +405,28 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
                 if matches!(evt.r#type, ResourceType::Document) {
                     *status_cl.lock() = Some(evt.response.status as u16);
                 }
+            }
+        });
+
+        // Page.javascriptDialogOpening — auto-dismiss native dialogs
+        // (alert/confirm/prompt/beforeunload). Without this, any page
+        // that calls these blocks the lifecycle event waiting for a UI
+        // dismissal that never comes. Mirrors Playwright/Selenium defaults.
+        let page_for_dialogs = page.clone();
+        let mut dialog_stream = page
+            .event_listener::<EventJavascriptDialogOpening>()
+            .await
+            .map_err(BlazeError::from)?;
+        tokio::spawn(async move {
+            while let Some(_evt) = dialog_stream.next().await {
+                let _ = page_for_dialogs
+                    .execute(
+                        HandleJavaScriptDialogParams::builder()
+                            .accept(false)
+                            .build()
+                            .expect("HandleJavaScriptDialogParams: accept is set"),
+                    )
+                    .await;
             }
         });
     }
