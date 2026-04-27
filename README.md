@@ -104,6 +104,11 @@ blazeweb.screenshot(url)                   # → image bytes (PNG by default)
 blazeweb.screenshot(url, format="jpeg", quality=80)  # JPEG
 blazeweb.screenshot(url, format="webp", quality=80)  # WebP
 blazeweb.fetch_all(url)                    # → FetchResult (html + image)
+
+# Async peers — same return shapes, awaitable
+await blazeweb.afetch(url)
+await blazeweb.ascreenshot(url)
+await blazeweb.afetch_all(url)
 ```
 
 ### Persistent `Client` with config
@@ -135,6 +140,29 @@ client = blazeweb.Client(config=cfg)
 #   BLAZEWEB_CONCURRENCY=32 BLAZEWEB_VIEWPORT__WIDTH=1920 python script.py
 client = blazeweb.Client()
 ```
+
+### `AsyncClient` — async peer
+
+Every `Client` method has an `AsyncClient` counterpart with the same
+construction signature, same config, same page pool. Methods return
+coroutines instead of values:
+
+```python
+import asyncio
+import blazeweb
+
+async with blazeweb.AsyncClient(concurrency=16) as ac:
+    r = await ac.fetch(url)
+    png = await ac.screenshot(url)
+    results = await ac.batch(urls, capture="html")  # awaitable list
+
+    # Real parallelism on one event loop — pool semaphore caps in-flight pages
+    htmls = await asyncio.gather(*(ac.fetch(u) for u in urls))
+```
+
+Sync and async coexist — each `Client` and `AsyncClient` you construct
+owns its own chromium subprocess and pool. Use whichever shape your
+codebase already speaks.
 
 ### Batching at high concurrency
 
@@ -208,15 +236,14 @@ r.dom.images()                         # all <img src=...>
 if r.dom.contains("Cloudflare"): ...
 ```
 
-### Navigation lifecycle — `wait_until` and `wait_after_ms`
-
-Two knobs control when a fetch returns:
+### Navigation lifecycle — `wait_until` and the two settle knobs
 
 ```python
 client = blazeweb.Client(
-    wait_until="load",        # default — window.onload (complete, Playwright-default)
+    wait_until="load",            # default — window.onload (Playwright-default)
     # wait_until="domcontentloaded",  # opt-in — parser done, no subresource wait
-    wait_after_ms=0,          # additional post-event sleep in ms
+    wait_after_ms=0,              # sleep AFTER lifecycle, BEFORE post-load scripts
+    wait_after_post_load_ms=0,    # sleep AFTER post-load scripts, BEFORE capture
 )
 
 # Per-call override
@@ -226,11 +253,67 @@ client.fetch(url, wait_after_ms=500)   # settle 500ms after load for SPA hydrati
 
 - `load` (default) waits for all subresources + deferred scripts; most complete.
 - `domcontentloaded` returns as soon as the DOM parser finishes — faster on
-  tracker-heavy sites but may miss post-DCL SPA mutations. In our A/B this
-  saved single-digit ms per URL on lean sites, so it's a real knob but not a
-  massive win at scale.
+  tracker-heavy sites but may miss post-DCL SPA mutations.
 - `wait_after_ms` adds a fixed sleep after the chosen event — useful for
   React/Vue/etc. pages that hydrate post-load.
+- `wait_after_post_load_ms` adds a fixed sleep AFTER any `post_load_scripts`
+  run and BEFORE actions / capture — for scripts that schedule async work
+  (`setTimeout`, deferred fetches) that needs to settle before HTML is read.
+
+### Per-fetch primitives
+
+Each `client.fetch(url, ...)` accepts per-call overrides that scope state
+to a single fetch. The pool tab is restored to its baseline after each
+call (scripts removed, blocks reset, headers restored), so per-fetch
+extras never leak between calls. The most common ones:
+
+```python
+client.fetch(
+    url,
+
+    # JS that runs BEFORE any page script (Page.addScriptToEvaluateOnNewDocument).
+    # Used for hooks, instrumentation, browser-API patching.
+    scripts=[ALERT_HOOK, DECODEURI_TRACE],
+
+    # JS that runs AFTER the loaded page (Runtime.evaluate). Single CDP call,
+    # full DOM access. Each script's return value is captured into
+    # r.post_load_results: list[Any] (json-decoded, in input order).
+    post_load_scripts=[
+        "document.querySelectorAll('[onclick]').forEach(e => e.click())",
+        "Array.from(document.querySelectorAll('a')).map(a => a.href)",
+    ],
+
+    # Block requests at the network layer for this fetch only (additive over
+    # client-level network.block_urls). Restored after capture.
+    block_urls=["*://*.tracker.example/*"],
+
+    # Block navigations triggered AFTER initial load (target=_blank,
+    # location.href=, action=javascript:...). Initial load proceeds normally;
+    # post-load nav requests are aborted so subsequent post_load_scripts /
+    # actions / capture all see the original page.
+    block_navigation=True,
+
+    # CDP-trusted post-load actions (event.isTrusted === true). Click, Fill,
+    # Hover, Wait. Use for bot-detection / strict real-user simulation;
+    # post_load_scripts is simpler for everything else.
+    actions=[blazeweb.Click("#login-btn")],
+
+    # Per-call extra headers. Cross-origin Referer is supported and routed
+    # through Page.navigate's referrer parameter (the W3C-policy-safe path).
+    extra_headers={"X-Run": "abc", "Referer": "https://r.example/page"},
+)
+```
+
+Each result carries the captured side-channels so you can correlate:
+
+```python
+r = client.fetch(url, post_load_scripts=["JSON.parse(document.body.dataset.payload || '{}')"])
+r.post_load_results[0]                  # → the parsed object
+r.console_messages                      # list[ConsoleMessage] from the page
+r.errors                                # filtered console errors + uncaught exceptions
+r.final_url                             # post-redirect URL
+r.status_code                           # main-document HTTP status
+```
 
 ### CLI — `python -m blazeweb`
 
@@ -290,7 +373,7 @@ Every knob lives under a nested sub-config. Flat kwargs on `Client(...)` and
 
 | Section        | Fields                                                                              |
 |----------------|-------------------------------------------------------------------------------------|
-| (top level)    | `concurrency`, `wait_until`, `wait_after_ms`                                         |
+| (top level)    | `concurrency`, `wait_until`, `wait_after_ms`, `wait_after_post_load_ms`, `capture_console_level` |
 | `viewport`     | `width`, `height`, `device_scale_factor`, `mobile`                                  |
 | `network`      | `user_agent`, `user_agent_metadata`, `proxy`, `extra_headers`, `ignore_https_errors`, `block_urls`, `disable_cache`, `offline`, `latency_ms`, `download_bps`, `upload_bps` |
 | `emulation`    | `locale`, `timezone`, `geolocation`, `prefers_color_scheme`, `javascript_enabled`   |
@@ -298,9 +381,17 @@ Every knob lives under a nested sub-config. Flat kwargs on `Client(...)` and
 | `timeout`      | `navigation_ms`, `launch_ms`, `screenshot_ms`                                        |
 | `chrome`       | `path`, `args`, `user_data_dir`, `headless`                                          |
 
-Per-call overrides (on `FetchConfig` / `ScreenshotConfig`): `extra_headers`,
-`timeout_ms`, `wait_until`, `wait_after_ms`. `ScreenshotConfig` also takes
-`viewport`, `full_page`, `format`, `quality`.
+`extra_headers` rejects a small list of headers chromium drops or
+computes from request state (`Cookie`, `Host`, `Origin`,
+`Content-Length`, `Transfer-Encoding`, `Connection`) at config-construction
+time, with a clear error pointing to the right alternative. `Referer` is
+not in that list — it's lifted out and routed through `Page.navigate`'s
+referrer parameter so cross-origin values pass through unchanged.
+
+Per-call overrides (on `FetchConfig`): `scripts`, `post_load_scripts`,
+`block_urls`, `block_navigation`, `actions`, `extra_headers`,
+`timeout_ms`, `wait_until`, `wait_after_ms`, `wait_after_post_load_ms`.
+`ScreenshotConfig` adds `viewport`, `full_page`, `format`, `quality`.
 
 **Env vars**: set via `BLAZEWEB_` prefix + `__` delimiter for nesting.
 `BLAZEWEB_CONCURRENCY=32`, `BLAZEWEB_VIEWPORT__WIDTH=1920`,
