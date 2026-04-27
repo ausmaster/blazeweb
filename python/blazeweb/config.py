@@ -15,27 +15,34 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 _FORBIDDEN_HEADERS: dict[str, str] = {
     "cookie": (
-        "Cookie cannot be set via extra_headers — chromium silently drops "
-        "Cookie set via Network.setExtraHTTPHeaders. blazeweb does not yet "
-        "expose a cookie-setting API; track the use case on the project "
-        "tracker."
+        "Cookie cannot be set via extra_headers — chromium silently drops it. "
+        "blazeweb does not yet expose a cookie-setting API."
     ),
     "cookie2": (
-        "Cookie2 cannot be set via extra_headers — chromium silently drops "
-        "it. blazeweb does not yet expose a cookie-setting API."
+        "Cookie2 cannot be set via extra_headers — chromium silently drops it. "
+        "blazeweb does not yet expose a cookie-setting API."
     ),
     "set-cookie": (
-        "Set-Cookie is a response header; setting it on a request is "
-        "meaningless and chromium drops it."
+        "Set-Cookie is a response header; setting it on a request is meaningless."
     ),
-    "host": "chromium computes Host from the request URL — setExtraHTTPHeaders override is ignored",
-    "origin": "chromium computes Origin from the request URL and CORS state — override is ignored",
-    "content-length": "chromium computes Content-Length from the request body",
-    "transfer-encoding": "Transfer-Encoding is set by chromium per HTTP/2 framing — override is ignored",
-    "connection": "Connection is set by chromium per HTTP/1.1 vs HTTP/2 — override is ignored",
+    "host": (
+        "chromium computes Host from the request URL; "
+        "setExtraHTTPHeaders override is ignored."
+    ),
+    "origin": (
+        "chromium computes Origin from the request URL and CORS state; "
+        "override is ignored."
+    ),
+    "content-length": "chromium computes Content-Length from the request body.",
+    "transfer-encoding": (
+        "Transfer-Encoding is set by chromium per HTTP framing; "
+        "override is ignored."
+    ),
+    "connection": (
+        "Connection is set by chromium per HTTP version; override is ignored."
+    ),
 }
 """Headers that chromium silently drops or computes from request state when
 set via ``Network.setExtraHTTPHeaders``. Values are user-facing error
@@ -48,11 +55,11 @@ which is the supported CDP path for navigation referrer.
 
 
 def _validate_extra_headers(v: dict[str, str]) -> dict[str, str]:
-    """Reject headers chromium silently drops or computes; surface a clear
-    error pointing to the right alternative.
+    """Reject headers chromium silently drops or computes.
 
-    Used by ``NetworkConfig``, ``FetchConfig``, and ``ScreenshotConfig`` —
-    every place a caller can set ``extra_headers``.
+    Surfaces a clear error pointing to the right alternative. Used by
+    ``NetworkConfig``, ``FetchConfig``, and ``ScreenshotConfig`` — every
+    place a caller can set ``extra_headers``.
     """
     for k in v:
         msg = _FORBIDDEN_HEADERS.get(k.lower())

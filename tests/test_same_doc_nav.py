@@ -1,12 +1,22 @@
 """Same-document navigation lifecycle: hash-only / query+hash navs that
-chromium treats as same-document do not fire ``Page.loadEventFired`` or
-``Page.domContentEventFired``. blazeweb must subscribe to
-``Page.navigatedWithinDocument`` and unblock the lifecycle wait on it.
+chromium treats as same-document don't fire ``Page.loadEventFired`` or
+``Page.domContentEventFired``, AND chromiumoxide's `Page.navigate`
+command-future hangs on the response (verified via raw CDP probe —
+chromium itself responds in <1ms; chromiumoxide drops the response on
+the long-lived pool session).
 
-Without the fix, the second hash fetch on a shared pool tab times out; with
-the fix, every hash fetch completes promptly. ``concurrency=1`` forces all
-fetches onto the same tab so the pool can't accidentally route around the
-issue.
+blazeweb tracks the pool tab's current URL via long-lived listeners on
+``Page.frameNavigated`` and ``Page.navigatedWithinDocument``. When a
+fetch's URL is same-doc relative to current, the engine takes a
+different code path:
+
+  - No per-call init scripts → ``Runtime.evaluate("location.href = ...")``.
+    Goes through a separate CDP command channel, doesn't hang.
+  - Per-call init scripts → cache-buster query forces a full nav so
+    chromium's ``addScriptToEvaluateOnNewDocument`` machinery fires.
+
+``concurrency=1`` forces every fetch onto the same pool tab so the
+optimization is exercised on every test.
 """
 
 from __future__ import annotations
@@ -113,7 +123,7 @@ def test_same_doc_without_init_scripts_uses_evaluate_path(httpserver: HTTPServer
     fast evaluate-based same-doc path; no cache-buster appears."""
     base = _serve_simple(httpserver)
     with blazeweb.Client(concurrency=1) as c:
-        r1 = c.fetch(base)
+        c.fetch(base)
         r2 = c.fetch(base + "#abc")
     assert r2.status_code == 200
     assert "__blazeweb_t" not in r2.final_url, (

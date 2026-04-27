@@ -10,11 +10,10 @@ extra_headers and routed through ``Page.navigate(referrer=...)``).
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
-
 import blazeweb
+import pytest
 from blazeweb.config import ClientConfig, FetchConfig, ScreenshotConfig
+from pydantic import ValidationError
 
 FORBIDDEN = [
     "Cookie",
@@ -79,6 +78,5 @@ def test_normal_headers_accepted() -> None:
 
 def test_forbidden_at_runtime_via_kwargs() -> None:
     """A direct ``client.fetch(extra_headers=...)`` call also surfaces the error."""
-    with blazeweb.Client() as c:
-        with pytest.raises((ValidationError, ValueError)):
-            c.fetch("https://example.com/", extra_headers={"Cookie": "x=y"})
+    with blazeweb.Client() as c, pytest.raises((ValidationError, ValueError)):
+        c.fetch("https://example.com/", extra_headers={"Cookie": "x=y"})

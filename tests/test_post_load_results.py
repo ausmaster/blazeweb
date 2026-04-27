@@ -10,18 +10,16 @@ their ``post_load_script`` to return data straight back.
 
 from __future__ import annotations
 
-import base64
+from collections.abc import Callable
 
 import blazeweb
 import pytest
 
-
-def _data_url(html: bytes) -> str:
-    return "data:text/html;base64," + base64.b64encode(html).decode()
+DataUrl = Callable[[bytes], str]
 
 
-def test_returns_primitive_values() -> None:
-    url = _data_url(b"<html><body>x</body></html>")
+def test_returns_primitive_values(data_url: DataUrl) -> None:
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(
             url,
@@ -30,37 +28,40 @@ def test_returns_primitive_values() -> None:
     assert r.post_load_results == [42, "hi", None, True, False, 3.14]
 
 
-def test_returns_object_value() -> None:
-    url = _data_url(b"<html><body>x</body></html>")
+def test_returns_object_value(data_url: DataUrl) -> None:
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(url, post_load_scripts=["({a: 1, b: [2, 3], c: 'x'})"])
     assert r.post_load_results == [{"a": 1, "b": [2, 3], "c": "x"}]
 
 
-def test_undefined_returns_none() -> None:
+def test_undefined_returns_none(data_url: DataUrl) -> None:
     """JS ``undefined`` → Python ``None``."""
-    url = _data_url(b"<html><body>x</body></html>")
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(url, post_load_scripts=["void 0", "undefined"])
     assert r.post_load_results == [None, None]
 
 
-def test_function_returns_none() -> None:
-    """Function returns surface as None (chromium's RemoteObjectType=Function
-    has no serialized value)."""
-    url = _data_url(b"<html><body>x</body></html>")
+def test_function_returns_none(data_url: DataUrl) -> None:
+    """Function returns surface as None.
+
+    chromium's RemoteObjectType=Function has no serialized value.
+    """
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(url, post_load_scripts=["(function() {})"])
     assert r.post_load_results == [None]
 
 
-def test_dom_nodes_serialize_to_empty_dict() -> None:
-    """``Runtime.evaluate(returnByValue=true)`` serializes DOM nodes / Window
-    as ``{}`` because they aren't enumerable. Consumers needing to distinguish
-    from a genuine ``{}`` should filter in their own script (e.g.
+def test_dom_nodes_serialize_to_empty_dict(data_url: DataUrl) -> None:
+    """DOM nodes serialize to ``{}`` under returnByValue=true.
+
+    chromium can't enumerate them. Consumers needing to distinguish from a
+    genuine ``{}`` should filter in their own script (e.g.
     ``JSON.stringify(x) === '{}' ? null : x``).
     """
-    url = _data_url(b"<html><body>x</body></html>")
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(
             url,
@@ -73,9 +74,9 @@ def test_dom_nodes_serialize_to_empty_dict() -> None:
     assert r.post_load_results[1] is None, "filtered DOM node → None"
 
 
-def test_async_iife_promise_returns_value() -> None:
+def test_async_iife_promise_returns_value(data_url: DataUrl) -> None:
     """page.evaluate awaits promises; the resolved value is captured."""
-    url = _data_url(b"<html><body>x</body></html>")
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(
             url,
@@ -86,9 +87,9 @@ def test_async_iife_promise_returns_value() -> None:
     assert r.post_load_results == ["done"]
 
 
-def test_order_matches_input() -> None:
+def test_order_matches_input(data_url: DataUrl) -> None:
     """Results list matches input order even when scripts mutate shared state."""
-    url = _data_url(b"<html><body>x</body></html>")
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(
             url,
@@ -99,20 +100,20 @@ def test_order_matches_input() -> None:
                 "window.__counter",
             ],
         )
-    # 1st: assignment returns the value 0; 2nd: += returns 1; 3rd: 11; 4th: 11.
+    # 1st: assignment returns 0; 2nd: += returns 1; 3rd: 11; 4th: 11.
     assert r.post_load_results == [0, 1, 11, 11]
 
 
-def test_no_post_load_scripts_yields_empty_list() -> None:
-    url = _data_url(b"<html><body>x</body></html>")
+def test_no_post_load_scripts_yields_empty_list(data_url: DataUrl) -> None:
+    url = data_url(b"<html><body>x</body></html>")
     with blazeweb.Client() as c:
         r = c.fetch(url)
     assert r.post_load_results == []
 
 
-def test_dom_query_results() -> None:
+def test_dom_query_results(data_url: DataUrl) -> None:
     """Demonstrates the workaround-replacement use case: read from the DOM."""
-    url = _data_url(
+    url = data_url(
         b"<html><body><span id='a'>hello</span>"
         b"<span data-x='1'>foo</span><span data-x='2'>bar</span></body></html>"
     )
@@ -128,8 +129,8 @@ def test_dom_query_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_client_parity() -> None:
-    url = _data_url(b"<html><body>x</body></html>")
+async def test_async_client_parity(data_url: DataUrl) -> None:
+    url = data_url(b"<html><body>x</body></html>")
     async with blazeweb.AsyncClient() as ac:
         r = await ac.fetch(url, post_load_scripts=["1 + 2", "({k: 'v'})"])
     assert r.post_load_results == [3, {"k": "v"}]

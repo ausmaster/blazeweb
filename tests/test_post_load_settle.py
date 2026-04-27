@@ -11,23 +11,22 @@ latency to every fetch even when post_load_scripts aren't used.
 
 from __future__ import annotations
 
-import base64
+import time
+from collections.abc import Callable
 
 import blazeweb
 import pytest
 
-
-def _data_url(html: bytes) -> str:
-    return "data:text/html;base64," + base64.b64encode(html).decode()
+DataUrl = Callable[[bytes], str]
 
 
-def test_wait_after_post_load_ms_lets_async_work_finish() -> None:
-    """A post_load_script schedules a 300ms-deferred DOM mutation; the
-    captured HTML must reflect it when wait_after_post_load_ms covers it.
+def test_wait_after_post_load_ms_lets_async_work_finish(data_url: DataUrl) -> None:
+    """A post_load_script schedules a 300ms-deferred DOM mutation.
+
+    The captured HTML must reflect it when wait_after_post_load_ms covers
+    the scheduled deferral.
     """
-    html = b"<html><body><div id='t'>initial</div></body></html>"
-    url = _data_url(html)
-
+    url = data_url(b"<html><body><div id='t'>initial</div></body></html>")
     schedule_async_mutation = (
         "setTimeout(() => "
         "{document.getElementById('t').textContent = 'POST_ASYNC_DONE';}, 300);"
@@ -42,14 +41,12 @@ def test_wait_after_post_load_ms_lets_async_work_finish() -> None:
     assert "POST_ASYNC_DONE" in r, f"settle window missed; html: {r[:200]!r}"
 
 
-def test_zero_default_no_wait() -> None:
+def test_zero_default_no_wait(data_url: DataUrl) -> None:
     """Default 0ms means no added latency for existing flows."""
-    html = b"<html><body>x</body></html>"
-    url = _data_url(html)
-    import time
+    url = data_url(b"<html><body>x</body></html>")
 
     with blazeweb.Client() as c:
-        # Warm up
+        # Warm up so first-fetch chromium overhead doesn't pollute the timer.
         c.fetch(url)
         t0 = time.perf_counter()
         c.fetch(url, post_load_scripts=["1"])
@@ -60,16 +57,15 @@ def test_zero_default_no_wait() -> None:
     assert no_wait < 0.5, f"unexpectedly slow with default wait: {no_wait:.3f}s"
 
 
-def test_wait_after_post_load_ms_runs_after_scripts() -> None:
-    """The settle window fires AFTER post_load_scripts return, so the
-    scripts themselves don't see it as latency."""
-    html = b"<html><body><div id='t'>initial</div></body></html>"
-    url = _data_url(html)
-    import time
+def test_wait_after_post_load_ms_runs_after_scripts(data_url: DataUrl) -> None:
+    """The settle fires AFTER post_load_scripts return.
+
+    Scripts themselves don't see the settle as latency.
+    """
+    url = data_url(b"<html><body><div id='t'>initial</div></body></html>")
 
     with blazeweb.Client() as c:
-        # Warm up
-        c.fetch(url)
+        c.fetch(url)  # warm up
         t0 = time.perf_counter()
         c.fetch(url, post_load_scripts=["1+1"], wait_after_post_load_ms=400)
         elapsed = time.perf_counter() - t0
@@ -78,13 +74,13 @@ def test_wait_after_post_load_ms_runs_after_scripts() -> None:
     assert elapsed >= 0.35, f"settle didn't apply: {elapsed:.3f}s"
 
 
-def test_wait_after_post_load_ms_distinct_from_wait_after_ms() -> None:
-    """wait_after_ms fires BEFORE post_load_scripts; the new knob fires AFTER.
-    A post_load_script that mutates the DOM synchronously is visible without
-    wait_after_post_load_ms; an async mutation needs wait_after_post_load_ms.
+def test_wait_after_post_load_ms_distinct_from_wait_after_ms(data_url: DataUrl) -> None:
+    """``wait_after_ms`` fires BEFORE post_load_scripts; the new knob fires AFTER.
+
+    A post_load_script that mutates the DOM synchronously is visible
+    without ``wait_after_post_load_ms``; an async mutation needs it.
     """
-    html = b"<html><body><div id='t'>before</div></body></html>"
-    url = _data_url(html)
+    url = data_url(b"<html><body><div id='t'>before</div></body></html>")
     sync_mutate = "document.getElementById('t').textContent = 'SYNC_DONE';"
     with blazeweb.Client() as c:
         # No wait_after_post_load_ms — sync mutation is immediately visible.
@@ -93,10 +89,8 @@ def test_wait_after_post_load_ms_distinct_from_wait_after_ms() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_client_wait_after_post_load_ms() -> None:
-    html = b"<html><body><div id='t'>initial</div></body></html>"
-    url = _data_url(html)
-
+async def test_async_client_wait_after_post_load_ms(data_url: DataUrl) -> None:
+    url = data_url(b"<html><body><div id='t'>initial</div></body></html>")
     async_mutate = (
         "setTimeout(() => "
         "{document.getElementById('t').textContent = 'ASYNC_VIA_AC';}, 200);"
