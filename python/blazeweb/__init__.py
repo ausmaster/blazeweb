@@ -24,6 +24,7 @@ speed; no Python HTML parsing round-trip.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from collections.abc import Iterable
@@ -140,14 +141,17 @@ def _make_render_result(raw: _RenderOutput | _FetchOutput) -> RenderResult:
 
     Accepts both ``_RenderOutput`` and ``_FetchOutput`` via duck typing —
     each carries the same ``html`` / ``console_messages`` / ``final_url`` /
-    ``status_code`` / ``elapsed_s`` / ``make_dom()`` shape. ``errors`` is
-    derived from ``console_messages`` for backward compatibility.
+    ``status_code`` / ``elapsed_s`` / ``make_dom()`` / ``post_load_results``
+    shape. ``errors`` is derived from ``console_messages`` for backward
+    compatibility. ``post_load_results`` arrives as JSON strings from Rust;
+    decoded to native Python here.
     """
     console_messages = [
         ConsoleMessage(type=m.type, text=m.text, timestamp=m.timestamp)
         for m in raw.console_messages
     ]
     errors = [m.text for m in console_messages if m.type == "error"]
+    post_load_results = [json.loads(s) if s is not None else None for s in raw.post_load_results]
     return RenderResult(
         raw.html,
         errors=errors,
@@ -155,6 +159,7 @@ def _make_render_result(raw: _RenderOutput | _FetchOutput) -> RenderResult:
         final_url=raw.final_url,
         status_code=raw.status_code,
         elapsed_s=raw.elapsed_s,
+        post_load_results=post_load_results,
         _raw=raw,
     )
 
@@ -168,6 +173,9 @@ class RenderResult(str):
       - ``.final_url`` — URL after any redirects
       - ``.status_code`` — final HTTP status
       - ``.elapsed_s`` — end-to-end page-visit time (seconds)
+      - ``.post_load_results`` — JS return values from each
+        ``FetchConfig.post_load_scripts`` entry (None for undefined /
+        non-JSON-serializable returns)
       - ``.dom`` — Rust-side HTML query (lazy; CSS selectors + BS4-like find)
     """
 
@@ -176,6 +184,7 @@ class RenderResult(str):
     final_url: str
     status_code: int
     elapsed_s: float
+    post_load_results: list[Any]
 
     def __new__(
         cls,
@@ -186,6 +195,7 @@ class RenderResult(str):
         final_url: str = "",
         status_code: int = 0,
         elapsed_s: float = 0.0,
+        post_load_results: list[Any] | None = None,
         _raw: _RenderOutput | None = None,
     ) -> RenderResult:
         """Construct a RenderResult; ``_raw`` is internal (Rust output object)."""
@@ -195,6 +205,7 @@ class RenderResult(str):
         instance.final_url = final_url
         instance.status_code = status_code
         instance.elapsed_s = elapsed_s
+        instance.post_load_results = post_load_results or []
         instance._raw = _raw  # type: ignore[attr-defined]
         instance._dom = None  # type: ignore[attr-defined]
         return instance
@@ -936,6 +947,7 @@ _SCREENSHOT_KWARGS = {
     "quality",
     "wait_until",
     "wait_after_ms",
+    "wait_after_post_load_ms",
 }
 
 
@@ -954,6 +966,7 @@ def _merge_fetch_config(base: FetchConfig | None, overrides: dict[str, Any]) -> 
             "timeout_ms",
             "wait_until",
             "wait_after_ms",
+            "wait_after_post_load_ms",
         }:
             raise TypeError(f"unknown fetch kwarg: {k!r}")
         data[k] = v

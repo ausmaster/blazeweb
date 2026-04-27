@@ -97,6 +97,7 @@ async fn do_fetch_inner(
         final_url: out.final_url,
         status_code: out.status_code,
         elapsed_s: out.elapsed_s,
+        post_load_results: out.post_load_results,
     })
 }
 
@@ -144,6 +145,7 @@ async fn do_fetch_all_inner(
         final_url: out.final_url,
         status_code: out.status_code,
         elapsed_s: out.elapsed_s,
+        post_load_results: out.post_load_results,
     })
 }
 
@@ -208,6 +210,7 @@ fn batch_result_to_py(
                 final_url: out.final_url,
                 status_code: out.status_code,
                 elapsed_s: out.elapsed_s,
+                post_load_results: out.post_load_results,
             }),
             CaptureMode::Png => list.append(PyBytes::new(py, &out.png.unwrap_or_default())),
             CaptureMode::Both => list.append(RawFetchOutput {
@@ -217,6 +220,7 @@ fn batch_result_to_py(
                 final_url: out.final_url,
                 status_code: out.status_code,
                 elapsed_s: out.elapsed_s,
+                post_load_results: out.post_load_results,
             }),
         },
         Err(e) => {
@@ -237,6 +241,7 @@ fn batch_result_to_py(
                     final_url: String::new(),
                     status_code: 0,
                     elapsed_s: 0.0,
+                    post_load_results: Vec::new(),
                 }),
                 CaptureMode::Png => list.append(PyBytes::new(py, b"")),
                 CaptureMode::Both => list.append(RawFetchOutput {
@@ -246,6 +251,7 @@ fn batch_result_to_py(
                     final_url: String::new(),
                     status_code: 0,
                     elapsed_s: 0.0,
+                    post_load_results: Vec::new(),
                 }),
             }
         }

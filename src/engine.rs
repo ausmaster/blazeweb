@@ -108,6 +108,10 @@ pub struct CaptureOutput {
     pub final_url: String,
     pub status_code: u16,
     pub elapsed_s: f64,
+    /// JSON-string per ``FetchConfig.post_load_scripts`` entry, ``None`` for
+    /// ``undefined`` / non-serializable JS returns. Empty when no
+    /// ``post_load_scripts`` were configured.
+    pub post_load_results: Vec<Option<String>>,
 }
 
 /// Navigate an already-configured pooled page to `url` and capture.
@@ -395,13 +399,66 @@ pub async fn capture_page(
         // page via Runtime.evaluate. Single CDP roundtrip per script. The
         // primary primitive for "do JS work on the loaded page" use cases
         // (see CLAUDE.md "Public Python surface").
-        for src in &per_call.post_load_scripts {
+        //
+        // Capture each script's JS return value. chromiumoxide forces
+        // `return_by_value=true` on the underlying CDP `Runtime.evaluate`,
+        // so primitives + plain objects + arrays come back JSON-decoded
+        // inside `RemoteObject.value`.
+        //
+        // Function returns: chromiumoxide preserves
+        // `RemoteObject.type=Function` even with returnByValue=true; we
+        // surface those as `None` rather than the empty dict chromium
+        // would otherwise produce.
+        //
+        // Sharp edge: DOM nodes / Window serialize to `{}` under
+        // returnByValue=true (chromium can't enumerate them). Consumers
+        // who need to distinguish should filter in their own script —
+        // e.g. ``"JSON.stringify(x) === '{}' ? null : x"``. Wrapping all
+        // scripts in a JS trampoline that detects DOM nodes up front
+        // would break multi-statement / `throw` / `try-catch` sources
+        // that aren't valid in an `await (EXPR)` slot, so the engine
+        // intentionally does not.
+        let mut post_load_results: Vec<Option<String>> =
+            Vec::with_capacity(per_call.post_load_scripts.len());
+        for (i, src) in per_call.post_load_scripts.iter().enumerate() {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] post_load_script ({} chars)",
+                "[{url}] post_load_script[{i}] ({} chars)",
                 src.len()
             );
-            page.evaluate(src.as_str()).await?;
+            let eval_result = page.evaluate(src.as_str()).await?;
+            let is_function = matches!(
+                eval_result.object().r#type,
+                chromiumoxide::cdp::js_protocol::runtime::RemoteObjectType::Function
+            );
+            let serialized = if is_function {
+                None
+            } else {
+                eval_result.value().map(|v| v.to_string())
+            };
+            if serialized.is_none() {
+                log::debug!(
+                    target: "blazeweb::engine",
+                    "[{url}] post_load_script[{i}] returned non-serializable / undefined / function"
+                );
+            }
+            post_load_results.push(serialized);
+        }
+
+        // Optional settle window AFTER post_load_scripts and BEFORE actions /
+        // capture. Distinct from `wait_after_ms` (which fires before
+        // post_load_scripts). Lets scripts that schedule async work
+        // (setTimeout, fetch, deferred DOM mutations) finish before capture.
+        let wait_after_post_load_ms = per_call
+            .wait_after_post_load_ms
+            .or(per_shot.wait_after_post_load_ms)
+            .unwrap_or(base.wait_after_post_load_ms);
+        if wait_after_post_load_ms > 0 {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] post-load settle {wait_after_post_load_ms}ms"
+            );
+            tokio::time::sleep(Duration::from_millis(wait_after_post_load_ms)).await;
         }
 
         // Run post-load actions BEFORE HTML capture so the captured DOM
@@ -500,6 +557,7 @@ pub async fn capture_page(
             final_url,
             status_code,
             elapsed_s: 0.0,
+            post_load_results,
         };
 
         if matches!(mode, CaptureMode::Html | CaptureMode::Both) {

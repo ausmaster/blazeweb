@@ -52,6 +52,11 @@ pub struct ClientConfigRs {
     /// Extra sleep after the chosen lifecycle event fires, in milliseconds.
     /// Useful for SPAs that render content via async JS AFTER DCL / load.
     pub wait_after_ms: u64,
+    /// Extra sleep AFTER ``post_load_scripts`` run and BEFORE actions /
+    /// capture, in milliseconds. Default 0 — opt-in. Use when post_load
+    /// scripts schedule async work (setTimeout, fetch, deferred mutations)
+    /// that needs to settle before capture.
+    pub wait_after_post_load_ms: u64,
     /// Which console levels populate `RenderResult.console_messages`.
     pub capture_console_level: CaptureConsoleLevel,
     pub viewport: ViewportRs,
@@ -173,6 +178,7 @@ impl Default for ClientConfigRs {
             concurrency: 16,
             wait_until: WaitUntil::default(),
             wait_after_ms: 0,
+            wait_after_post_load_ms: 0,
             capture_console_level: CaptureConsoleLevel::default(),
             viewport: ViewportRs::default(),
             network: NetworkRs::default(),
@@ -263,6 +269,9 @@ pub struct FetchConfigRs {
     pub wait_until: Option<WaitUntil>,
     /// Per-call override for post-event sleep. None = inherit client default.
     pub wait_after_ms: Option<u64>,
+    /// Per-call override for post-post_load_scripts settle. None = inherit
+    /// client default (which itself defaults to 0 — opt-in).
+    pub wait_after_post_load_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -286,6 +295,9 @@ pub struct ScreenshotConfigRs {
     pub wait_until: Option<WaitUntil>,
     /// Per-call override for post-event sleep. None = inherit client default.
     pub wait_after_ms: Option<u64>,
+    /// Per-call override for post-post_load_scripts settle. None = inherit
+    /// client default.
+    pub wait_after_post_load_ms: Option<u64>,
 }
 
 // ----------------------------------------------------------------------------
@@ -307,6 +319,11 @@ pub fn parse_client_config(py_dict: &Bound<'_, PyAny>) -> Result<ClientConfigRs>
             && !v.is_none()
         {
             cfg.wait_after_ms = v.extract().map_err(to_internal)?;
+        }
+        if let Some(v) = d.get_item("wait_after_post_load_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_post_load_ms = v.extract().map_err(to_internal)?;
         }
         if let Some(v) = d.get_item("capture_console_level")?
             && !v.is_none()
@@ -390,6 +407,11 @@ pub fn parse_fetch_config(py_dict: &Bound<'_, PyAny>) -> Result<FetchConfigRs> {
         {
             cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
         }
+        if let Some(v) = d.get_item("wait_after_post_load_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_post_load_ms = Some(v.extract().map_err(to_internal)?);
+        }
     }
     Ok(cfg)
 }
@@ -442,6 +464,11 @@ pub fn parse_screenshot_config(py_dict: &Bound<'_, PyAny>) -> Result<ScreenshotC
             && !v.is_none()
         {
             cfg.wait_after_ms = Some(v.extract().map_err(to_internal)?);
+        }
+        if let Some(v) = d.get_item("wait_after_post_load_ms")?
+            && !v.is_none()
+        {
+            cfg.wait_after_post_load_ms = Some(v.extract().map_err(to_internal)?);
         }
     }
     Ok(cfg)

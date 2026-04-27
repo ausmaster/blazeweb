@@ -287,6 +287,12 @@ class ClientConfig(BaseSettings):
     """Post-lifecycle-event settle (ms). Useful for SPAs that hydrate
     async after ``wait_until`` fires."""
 
+    wait_after_post_load_ms: int = Field(0, ge=0, le=60000)
+    """Default settle (ms) AFTER ``post_load_scripts`` run and BEFORE
+    actions / capture. Distinct from ``wait_after_ms`` (which fires
+    BEFORE post_load_scripts). Per-call overridable via
+    :attr:`FetchConfig.wait_after_post_load_ms`."""
+
     capture_console_level: Literal["all", "warn", "error"] = "error"
     """Level threshold for ``RenderResult.console_messages`` capture.
 
@@ -375,6 +381,7 @@ class ClientConfig(BaseSettings):
             "concurrency",
             "wait_until",
             "wait_after_ms",
+            "wait_after_post_load_ms",
             "capture_console_level",
         ):
             if top_field in kwargs:
@@ -573,6 +580,11 @@ class FetchConfig(BaseModel):
     timeout_ms: int | None = Field(None, ge=100)
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)
+    wait_after_post_load_ms: int | None = Field(None, ge=0, le=60000)
+    """Settle delay AFTER ``post_load_scripts`` run and BEFORE actions /
+    capture. Distinct from ``wait_after_ms`` (which fires BEFORE
+    post_load_scripts). Default ``None`` (inherit Client base, which itself
+    defaults to 0 — opt-in)."""
 
     @field_validator("extra_headers")
     @classmethod
@@ -598,6 +610,8 @@ class ScreenshotConfig(BaseModel):
 
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)
+    wait_after_post_load_ms: int | None = Field(None, ge=0, le=60000)
+    """See :attr:`FetchConfig.wait_after_post_load_ms`."""
 
     @field_validator("extra_headers")
     @classmethod
