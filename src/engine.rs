@@ -17,8 +17,8 @@ use chromiumoxide::cdp::browser_protocol::network::{
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     AddScriptToEvaluateOnNewDocumentParams, CaptureScreenshotFormat, CaptureScreenshotParams,
-    EventDomContentEventFired, EventLoadEventFired, EventNavigatedWithinDocument,
-    RemoveScriptToEvaluateOnNewDocumentParams, ScriptIdentifier,
+    EventDomContentEventFired, EventLoadEventFired, EventNavigatedWithinDocument, NavigateParams,
+    ReferrerPolicy, RemoveScriptToEvaluateOnNewDocumentParams, ScriptIdentifier,
 };
 use futures::StreamExt;
 
@@ -182,21 +182,40 @@ pub async fn capture_page(
             .await?;
         }
 
-        // Per-call header merge — only if there ARE per-call / per-shot extras.
-        if !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty() {
+        // Per-call header merge — only if there ARE per-call / per-shot extras
+        // OR a base Referer that needs lifting out.
+        let mut headers_map = base.network.extra_headers.clone();
+        for (k, v) in &per_call.extra_headers {
+            headers_map.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &per_shot.extra_headers {
+            headers_map.insert(k.clone(), v.clone());
+        }
+        // Lift `Referer` (case-insensitive) out of the merged headers map.
+        // Setting Referer via Network.setExtraHTTPHeaders is rejected by
+        // chromium with ERR_BLOCKED_BY_CLIENT for cross-origin values (W3C
+        // Referrer Policy enforcement at the URL loader). The supported
+        // path is `Page.navigate` with the `referrer` parameter, applied
+        // below.
+        let mut referrer: Option<String> = None;
+        let referer_keys: Vec<String> = headers_map
+            .keys()
+            .filter(|k| k.eq_ignore_ascii_case("referer"))
+            .cloned()
+            .collect();
+        for k in referer_keys {
+            referrer = headers_map.remove(&k);
+        }
+        let has_per_fetch_extras =
+            !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty();
+        if has_per_fetch_extras || referrer.is_some() {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] merging headers (per_call={}, per_shot={})",
+                "[{url}] merging headers (per_call={}, per_shot={}, referrer={})",
                 per_call.extra_headers.len(),
-                per_shot.extra_headers.len()
+                per_shot.extra_headers.len(),
+                referrer.is_some()
             );
-            let mut headers_map = base.network.extra_headers.clone();
-            for (k, v) in &per_call.extra_headers {
-                headers_map.insert(k.clone(), v.clone());
-            }
-            for (k, v) in &per_shot.extra_headers {
-                headers_map.insert(k.clone(), v.clone());
-            }
             let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(
                 serde_json::to_value(&headers_map)
                     .map_err(|e| BlazeError::Internal(e.to_string()))?,
@@ -267,7 +286,22 @@ pub async fn capture_page(
             }
             _ => {
                 log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
-                page.goto(url).await?;
+                let nav_params = match referrer.as_ref() {
+                    // ReferrerPolicy::UnsafeUrl tells chromium to pass the
+                    // full referrer URL through unchanged. The default policy
+                    // (`strict-origin-when-cross-origin`) strips path and
+                    // query for cross-origin requests, which would mangle
+                    // testing-tool use cases that need the exact Referer
+                    // they specified.
+                    Some(r) => NavigateParams::builder()
+                        .url(url.to_string())
+                        .referrer(r.clone())
+                        .referrer_policy(ReferrerPolicy::UnsafeUrl)
+                        .build()
+                        .map_err(|e| BlazeError::Cdp(format!("navigate params: {e}")))?,
+                    None => NavigateParams::new(url.to_string()),
+                };
+                page.goto(nav_params).await?;
                 let t_nav_ack = t_goto.elapsed();
                 log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
                 false
@@ -538,6 +572,19 @@ pub async fn capture_page(
                 url_patterns: Some(block_patterns(&base.network.block_urls)),
             })
             .await;
+    }
+
+    // Per-call extra-headers cleanup — restore the Client-level baseline so
+    // per-call overrides don't leak to subsequent fetches on this pooled tab.
+    // Mirrors the block_urls cleanup pattern; same swallow-error semantics
+    // (cleanup failure must not mask the original cause). Triggers on either
+    // per_call/per_shot extras OR a base Referer that we lifted out — both
+    // paths called `setExtraHTTPHeaders` with a modified header set.
+    if (!per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty())
+        && let Ok(json) = serde_json::to_value(&base.network.extra_headers)
+    {
+        let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(json);
+        let _ = page.execute(SetExtraHttpHeadersParams::new(headers)).await;
     }
 
     // Per-call navigation-block cleanup — disable the Fetch domain so the

@@ -16,6 +16,40 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_FORBIDDEN_HEADERS: dict[str, str] = {
+    "cookie": "use Network.setCookie (CDP) — chromium drops Cookie set via setExtraHTTPHeaders",
+    "cookie2": "use Network.setCookie (CDP) — chromium drops Cookie2 set via setExtraHTTPHeaders",
+    "set-cookie": "Set-Cookie is a response header; setting it on a request is meaningless",
+    "host": "chromium computes Host from the request URL — setExtraHTTPHeaders override is ignored",
+    "origin": "chromium computes Origin from the request URL and CORS state — override is ignored",
+    "content-length": "chromium computes Content-Length from the request body",
+    "transfer-encoding": "Transfer-Encoding is set by chromium per HTTP/2 framing — override is ignored",
+    "connection": "Connection is set by chromium per HTTP/1.1 vs HTTP/2 — override is ignored",
+}
+"""Headers that chromium silently drops or computes from request state when
+set via ``Network.setExtraHTTPHeaders``. Values are user-facing error
+messages that name a CDP alternative or note why the override is rejected.
+
+``Referer`` is NOT in this list: blazeweb lifts ``Referer`` out of
+``extra_headers`` and routes it through ``Page.navigate(referrer=...)``,
+which is the supported CDP path for navigation referrer.
+"""
+
+
+def _validate_extra_headers(v: dict[str, str]) -> dict[str, str]:
+    """Reject headers chromium silently drops or computes; surface a clear
+    error pointing to the right alternative.
+
+    Used by ``NetworkConfig``, ``FetchConfig``, and ``ScreenshotConfig`` —
+    every place a caller can set ``extra_headers``.
+    """
+    for k in v:
+        msg = _FORBIDDEN_HEADERS.get(k.lower())
+        if msg is not None:
+            raise ValueError(f"extra_headers: cannot set '{k}' — {msg}")
+    return v
+
+
 class ViewportConfig(BaseModel):
     """Browser viewport dimensions."""
 
@@ -105,6 +139,15 @@ class NetworkConfig(BaseModel):
     """``http://host:port`` or ``socks5://host:port`` — passed as a Chrome CLI flag."""
 
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    """Extra HTTP request headers applied to every fetch on this Client.
+
+    Setting ``Referer`` here works for both same-origin and cross-origin
+    values: blazeweb lifts the Referer out of the merged headers map and
+    routes it through ``Page.navigate(referrer=...)``, bypassing chromium's
+    URL-loader-level enforcement of the W3C Referrer Policy on
+    ``Network.setExtraHTTPHeaders``.
+    """
+
     ignore_https_errors: bool = False
     """Pass ``--ignore-certificate-errors`` to Chrome."""
 
@@ -122,6 +165,11 @@ class NetworkConfig(BaseModel):
     @classmethod
     def _no_empty_patterns(cls, v: list[str]) -> list[str]:
         return [p for p in v if p.strip()]
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _no_forbidden_headers(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_extra_headers(v)
 
 
 class EmulationConfig(BaseModel):
@@ -526,6 +574,11 @@ class FetchConfig(BaseModel):
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)
 
+    @field_validator("extra_headers")
+    @classmethod
+    def _no_forbidden_headers(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_extra_headers(v)
+
 
 class ScreenshotConfig(BaseModel):
     """Per-call override for ``Client.screenshot()``."""
@@ -545,6 +598,11 @@ class ScreenshotConfig(BaseModel):
 
     wait_until: Literal["domcontentloaded", "load"] | None = None
     wait_after_ms: int | None = Field(None, ge=0, le=60000)
+
+    @field_validator("extra_headers")
+    @classmethod
+    def _no_forbidden_headers(cls, v: dict[str, str]) -> dict[str, str]:
+        return _validate_extra_headers(v)
 
 
 __all__ = [
