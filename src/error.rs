@@ -16,11 +16,22 @@ pub enum BlazeError {
     #[error("browser launch failed: {0}")]
     LaunchFailed(String),
 
-    #[error("navigation timeout after {0}ms")]
-    NavigationTimeout(u64),
+    #[error("navigation to {url} did not reach lifecycle event {wait_until} within {timeout_ms}ms")]
+    NavigationTimeout {
+        timeout_ms: u64,
+        url: String,
+        wait_until: &'static str,
+    },
 
     #[error("screenshot timeout after {0}ms")]
     ScreenshotTimeout(u64),
+
+    #[error("post_load_scripts[{index}]: {source}")]
+    PostLoadScript {
+        index: usize,
+        #[source]
+        source: Box<BlazeError>,
+    },
 
     #[error("CDP: {0}")]
     Cdp(String),

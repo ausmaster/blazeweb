@@ -131,6 +131,18 @@ pub async fn capture_page(
         .or(per_shot.timeout_ms)
         .unwrap_or(base.timeout.navigation_ms);
 
+    // Hoist wait_until computation before the fut block so the timeout
+    // error path (outside the fut) can name which lifecycle event was
+    // being awaited.
+    let wait_until = per_call
+        .wait_until
+        .or(per_shot.wait_until)
+        .unwrap_or(base.wait_until);
+    let wait_until_label: &'static str = match wait_until {
+        WaitUntil::Load => "load",
+        WaitUntil::DomContentLoaded => "domcontentloaded",
+    };
+
     let page = guard.page();
 
     // Per-call init scripts — register BEFORE the timeout-wrapped main work
@@ -231,10 +243,6 @@ pub async fn capture_page(
         // Subscribe BEFORE goto (race-free). goto returns on navigate ack
         // (~5-10ms), well before any lifecycle event — DO NOT race it against
         // these streams or the goto arm always wins.
-        let wait_until = per_call
-            .wait_until
-            .or(per_shot.wait_until)
-            .unwrap_or(base.wait_until);
         let t_goto = Instant::now();
         log::trace!(target: "blazeweb::engine", "[{url}] subscribe lifecycle streams");
         let mut dcl_stream = page
@@ -426,7 +434,13 @@ pub async fn capture_page(
                 "[{url}] post_load_script[{i}] ({} chars)",
                 src.len()
             );
-            let eval_result = page.evaluate(src.as_str()).await?;
+            let eval_result =
+                page.evaluate(src.as_str())
+                    .await
+                    .map_err(|e| BlazeError::PostLoadScript {
+                        index: i,
+                        source: Box::new(BlazeError::from(e)),
+                    })?;
             let is_function = matches!(
                 eval_result.object().r#type,
                 chromiumoxide::cdp::js_protocol::runtime::RemoteObjectType::Function
@@ -664,7 +678,11 @@ pub async fn capture_page(
 
     let mut result = fut_result.map_err(|_| {
         log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
-        BlazeError::NavigationTimeout(timeout_ms)
+        BlazeError::NavigationTimeout {
+            timeout_ms,
+            url: url.to_string(),
+            wait_until: wait_until_label,
+        }
     })??;
 
     result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;
