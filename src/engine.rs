@@ -17,8 +17,8 @@ use chromiumoxide::cdp::browser_protocol::network::{
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     AddScriptToEvaluateOnNewDocumentParams, CaptureScreenshotFormat, CaptureScreenshotParams,
-    EventDomContentEventFired, EventLoadEventFired, RemoveScriptToEvaluateOnNewDocumentParams,
-    ScriptIdentifier,
+    EventDomContentEventFired, EventLoadEventFired, EventNavigatedWithinDocument,
+    RemoveScriptToEvaluateOnNewDocumentParams, ScriptIdentifier,
 };
 use futures::StreamExt;
 
@@ -29,6 +29,32 @@ use crate::config::{
 use crate::error::{BlazeError, Result};
 use crate::pool::{PageGuard, block_patterns};
 use crate::result::ConsoleMessageRs;
+
+/// True when ``target`` differs from ``prev`` only by URL fragment (the part
+/// after `#`) AND the fragment actually differs. chromium treats such
+/// transitions as same-document navigations: no new HTTP request, no `load`
+/// event, no `domContentLoaded` event — only `Page.navigatedWithinDocument`
+/// fires.
+///
+/// Identical URLs (same path/query, same fragment or both fragmentless) are
+/// NOT same-doc — chromium does a full reload, the init scripts re-fire, and
+/// the load event fires; we want the normal goto path.
+///
+/// Used by `capture_page` to route hash-only navs through `Runtime.evaluate`
+/// (which goes through a separate CDP command channel) rather than
+/// `Page.navigate` (which empirically hangs in chromiumoxide for hash-only
+/// URLs after a previous nav on the same pool tab).
+fn is_same_document_change(prev: &str, target: &str) -> bool {
+    fn split(s: &str) -> (&str, Option<&str>) {
+        match s.split_once('#') {
+            Some((p, h)) => (p, Some(h)),
+            None => (s, None),
+        }
+    }
+    let (prev_prefix, prev_hash) = split(prev);
+    let (target_prefix, target_hash) = split(target);
+    prev_prefix == target_prefix && prev_hash != target_hash
+}
 
 /// Apply an action's failure policy. Returns ``Ok(true)`` if the action
 /// succeeded (caller should run any post-action wait), ``Ok(false)`` if it
@@ -196,27 +222,86 @@ pub async fn capture_page(
             .event_listener::<EventLoadEventFired>()
             .await
             .map_err(BlazeError::from)?;
+        // Same-document navs (hash-only / pushState) fire neither DCL nor
+        // load; they fire `Page.navigatedWithinDocument` instead. Subscribe
+        // here so we don't hang on a hash-only fetch from a previously-loaded
+        // pool tab.
+        //
+        // Empirically, on chrome-headless-shell, `Page.navigate` for a URL
+        // that differs only by hash from the pool tab's current URL never
+        // returns through chromiumoxide's CommandFuture path — likely the
+        // chromiumoxide handler's pending-navigations queue blocks waiting
+        // for a `load` event that chromium will never fire for same-doc
+        // navs. We race `goto` against `navigatedWithinDocument`: if the
+        // event fires before goto returns, the navigation is same-doc and
+        // already complete; we drop the pending goto future and skip the
+        // lifecycle wait.
+        let mut within_doc_stream = page
+            .event_listener::<EventNavigatedWithinDocument>()
+            .await
+            .map_err(BlazeError::from)?;
 
-        log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
-        page.goto(url).await?;
-        let t_nav_ack = t_goto.elapsed();
-        log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
+        // Detect same-document navigation by URL comparison against the pool
+        // tab's tracked current URL. Same-doc navs need a different code path
+        // because chromiumoxide's `Page.navigate` command future hangs for
+        // hash-only URLs in some sequences (e.g., hash → hash); the symptom
+        // is no response from chromium and no `navigatedWithinDocument` event
+        // firing on the pool tab's per-fetch subscription.
+        //
+        // `Runtime.evaluate` goes through a separate CDP command channel and
+        // doesn't share that hang. Setting `location.href = url` triggers the
+        // same-document nav natively, which fires `navigatedWithinDocument`
+        // reliably.
+        let same_doc_nav = match guard.current_url() {
+            Some(prev) if is_same_document_change(&prev, url) => {
+                log::trace!(
+                    target: "blazeweb::engine",
+                    "[{url}] same-doc nav detected (prev={prev}); using Runtime.evaluate"
+                );
+                let escaped = serde_json::to_string(url).unwrap_or_else(|_| "''".to_string());
+                page.evaluate(format!("location.href = {escaped};").as_str())
+                    .await?;
+                let t_nav_ack = t_goto.elapsed();
+                log::trace!(target: "blazeweb::engine", "[{url}] evaluate-nav ack in {t_nav_ack:?}");
+                true
+            }
+            _ => {
+                log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
+                page.goto(url).await?;
+                let t_nav_ack = t_goto.elapsed();
+                log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
+                false
+            }
+        };
 
-        match wait_until {
-            WaitUntil::DomContentLoaded => {
-                // DCL preferred; load covers tiny docs that never fire DCL.
-                tokio::select! {
-                    _ = dcl_stream.next() => {
-                        log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
-                    }
-                    _ = load_stream.next() => {
-                        log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
+        if !same_doc_nav {
+            match wait_until {
+                WaitUntil::DomContentLoaded => {
+                    // DCL preferred; load covers tiny docs that never fire DCL;
+                    // navigatedWithinDocument covers same-doc navs that race
+                    // goto's response (rare but possible on full nav too).
+                    tokio::select! {
+                        _ = dcl_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
+                        }
+                        _ = load_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
+                        }
+                        _ = within_doc_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] navigatedWithinDocument fired");
+                        }
                     }
                 }
-            }
-            WaitUntil::Load => {
-                load_stream.next().await;
-                log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+                WaitUntil::Load => {
+                    tokio::select! {
+                        _ = load_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+                        }
+                        _ = within_doc_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] navigatedWithinDocument fired");
+                        }
+                    }
+                }
             }
         }
         log::trace!(
@@ -366,8 +451,13 @@ pub async fn capture_page(
             .flatten()
             .unwrap_or_else(|| url.to_string());
         // Status from the pool's Network.responseReceived listener — captured
-        // on response headers, independent of wait_until choice.
-        let status_code: u16 = guard.main_status().unwrap_or(0);
+        // on response headers, independent of wait_until choice. Same-document
+        // navs don't trigger a new HTTP response, so fall back to the prior
+        // fetch's status (the document hasn't actually changed).
+        let status_code: u16 = guard
+            .main_status()
+            .or_else(|| same_doc_nav.then(|| guard.prev_main_status()).flatten())
+            .unwrap_or(0);
 
         let mut out = CaptureOutput {
             html: None,

@@ -66,3 +66,23 @@ def test_pool_integrity_mixed_config_soak(httpserver: HTTPServer) -> None:
     assert len(track_hits) >= 1, (
         f"block_urls residue prevented /track in control fetch: hits={len(track_hits)}"
     )
+
+
+def test_pool_integrity_with_same_doc_navs(httpserver: HTTPServer) -> None:
+    """Mix full and same-document navs on a 1-tab pool. Each nav must
+    succeed; same-doc navs must propagate the prior document's status."""
+    httpserver.expect_request("/").respond_with_data(
+        "<html><body>x</body></html>", content_type="text/html"
+    )
+    base = httpserver.url_for("/")
+
+    with blazeweb.Client(concurrency=1) as c:
+        r1 = c.fetch(base)
+        r2 = c.fetch(base + "#a")  # same-doc
+        r3 = c.fetch(base + "#b")  # same-doc again
+        r4 = c.fetch(base + "?q=1")  # full nav (different query)
+        r5 = c.fetch(base + "?q=1#c")  # same-doc from r4
+        r6 = c.fetch(base)  # full nav (path again)
+
+    for r, label in [(r1, "r1"), (r2, "r2"), (r3, "r3"), (r4, "r4"), (r5, "r5"), (r6, "r6")]:
+        assert r.status_code == 200, f"{label}: status={r.status_code}"
