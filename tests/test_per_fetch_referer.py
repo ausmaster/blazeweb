@@ -82,3 +82,35 @@ async def test_async_client_referer_parity(httpserver: HTTPServer) -> None:
     requests = [req for req, _ in httpserver.log if req.path == "/"]
     referer = requests[-1].headers.get("Referer")
     assert referer == "http://foo.bar/async"
+
+
+def test_base_level_referer_persists_across_fetches(httpserver: HTTPServer) -> None:
+    """Client-level (base) Referer applies to every fetch on the Client and
+    survives the per-call extra_headers cleanup arm. Regression test for
+    the case where the cleanup re-applies base headers (incl. base Referer)
+    after a per-call fetch — the next fetch's Referer must still reach the
+    server unchanged."""
+    url = _serve_referrer_echo(httpserver)
+    base_referer = "http://foo.bar/base-persistent"
+
+    with blazeweb.Client(concurrency=1, extra_headers={"Referer": base_referer}) as c:
+        # Fetch 1: base Referer only (no per-call extras → no cleanup arm fires)
+        r1 = c.fetch(url)
+        # Fetch 2: per-call extra triggers cleanup, which re-applies base
+        # headers. Base Referer must continue to flow through.
+        r2 = c.fetch(url, extra_headers={"X-Per-Call": "v"})
+        # Fetch 3: no per-call extras again. Base Referer must still apply.
+        r3 = c.fetch(url)
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r3.status_code == 200
+
+    requests = [req for req, _ in httpserver.log if req.path == "/"]
+    assert len(requests) >= 3
+    for i, req in enumerate(requests[:3]):
+        assert req.headers.get("Referer") == base_referer, (
+            f"fetch {i + 1}: expected base Referer, got {req.headers.get('Referer')!r}"
+        )
+    # Per-call X-Per-Call must NOT leak into fetch 3.
+    assert requests[2].headers.get("X-Per-Call") is None

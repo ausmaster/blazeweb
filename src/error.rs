@@ -23,9 +23,6 @@ pub enum BlazeError {
         wait_until: &'static str,
     },
 
-    #[error("screenshot timeout after {0}ms")]
-    ScreenshotTimeout(u64),
-
     #[error("post_load_scripts[{index}]: {source}")]
     PostLoadScript {
         index: usize,

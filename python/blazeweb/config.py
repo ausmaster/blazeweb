@@ -17,9 +17,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _FORBIDDEN_HEADERS: dict[str, str] = {
-    "cookie": "use Network.setCookie (CDP) — chromium drops Cookie set via setExtraHTTPHeaders",
-    "cookie2": "use Network.setCookie (CDP) — chromium drops Cookie2 set via setExtraHTTPHeaders",
-    "set-cookie": "Set-Cookie is a response header; setting it on a request is meaningless",
+    "cookie": (
+        "Cookie cannot be set via extra_headers — chromium silently drops "
+        "Cookie set via Network.setExtraHTTPHeaders. blazeweb does not yet "
+        "expose a cookie-setting API; track the use case on the project "
+        "tracker."
+    ),
+    "cookie2": (
+        "Cookie2 cannot be set via extra_headers — chromium silently drops "
+        "it. blazeweb does not yet expose a cookie-setting API."
+    ),
+    "set-cookie": (
+        "Set-Cookie is a response header; setting it on a request is "
+        "meaningless and chromium drops it."
+    ),
     "host": "chromium computes Host from the request URL — setExtraHTTPHeaders override is ignored",
     "origin": "chromium computes Origin from the request URL and CORS state — override is ignored",
     "content-length": "chromium computes Content-Length from the request body",

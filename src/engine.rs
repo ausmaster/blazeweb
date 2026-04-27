@@ -56,6 +56,37 @@ fn is_same_document_change(prev: &str, target: &str) -> bool {
     prev_prefix == target_prefix && prev_hash != target_hash
 }
 
+/// Append a unique nanosecond cache-buster query parameter to ``url``,
+/// preserving any existing fragment. Used to force chromium to treat a
+/// same-document URL as a new document (so per-call init scripts fire).
+///
+/// data: URLs and other URLs without a query slot fall through unchanged
+/// (best-effort — caller will get the chromiumoxide hang for those).
+fn append_cache_buster(url: &str) -> String {
+    let nano = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let suffix = format!("__blazeweb_t={nano}");
+    let (path_query, hash) = match url.split_once('#') {
+        Some((p, h)) => (p, Some(h)),
+        None => (url, None),
+    };
+    // data: URLs / opaque schemes don't have a useful query slot; bail.
+    if path_query.starts_with("data:") || !path_query.contains("://") {
+        return url.to_string();
+    }
+    let with_q = if path_query.contains('?') {
+        format!("{path_query}&{suffix}")
+    } else {
+        format!("{path_query}?{suffix}")
+    };
+    match hash {
+        Some(h) => format!("{with_q}#{h}"),
+        None => with_q,
+    }
+}
+
 /// Apply an action's failure policy. Returns ``Ok(true)`` if the action
 /// succeeded (caller should run any post-action wait), ``Ok(false)`` if it
 /// failed but the policy said to continue/ignore, or ``Err`` to propagate
@@ -274,27 +305,62 @@ pub async fn capture_page(
 
         // Detect same-document navigation by URL comparison against the pool
         // tab's tracked current URL. Same-doc navs need a different code path
-        // because chromiumoxide's `Page.navigate` command future hangs for
-        // hash-only URLs in some sequences (e.g., hash → hash); the symptom
-        // is no response from chromium and no `navigatedWithinDocument` event
-        // firing on the pool tab's per-fetch subscription.
+        // because chromiumoxide's `Page.navigate` command future never
+        // resolves on a pooled tab whose previous fetch was a successful
+        // navigation: chromium itself responds to the hash-only Page.navigate
+        // immediately (verified via raw CDP probe — under 1ms, with correct
+        // `frameId` + omitted `loaderId`), but the response never reaches
+        // chromiumoxide's awaiting `CommandFuture`. The bug is in
+        // chromiumoxide's command-response routing on the long-lived pool
+        // session, NOT in chromium.
         //
-        // `Runtime.evaluate` goes through a separate CDP command channel and
-        // doesn't share that hang. Setting `location.href = url` triggers the
-        // same-document nav natively, which fires `navigatedWithinDocument`
-        // reliably.
+        // For hash-only URLs without per-call init scripts: route through
+        // `Runtime.evaluate("location.href = url")` — separate CDP command
+        // channel that isn't affected by the routing bug. Triggers
+        // `navigatedWithinDocument` natively; updates `current_url`.
+        //
+        // For hash-only URLs WITH per-call init scripts: chromium only fires
+        // `addScriptToEvaluateOnNewDocument` scripts on new-document navs,
+        // so a same-doc shortcut would silently skip the user's
+        // init_scripts. Append a nanosecond cache-buster to the URL's
+        // query so chromium does a full nav (fresh document) and the
+        // init_scripts fire as expected. The cache-buster is visible in
+        // `r.final_url` for full transparency.
+        let cache_buster_url: String;
+        let needs_init_scripts = !per_call.scripts.is_empty();
         let same_doc_nav = match guard.current_url() {
             Some(prev) if is_same_document_change(&prev, url) => {
-                log::trace!(
-                    target: "blazeweb::engine",
-                    "[{url}] same-doc nav detected (prev={prev}); using Runtime.evaluate"
-                );
-                let escaped = serde_json::to_string(url).unwrap_or_else(|_| "''".to_string());
-                page.evaluate(format!("location.href = {escaped};").as_str())
-                    .await?;
-                let t_nav_ack = t_goto.elapsed();
-                log::trace!(target: "blazeweb::engine", "[{url}] evaluate-nav ack in {t_nav_ack:?}");
-                true
+                if needs_init_scripts {
+                    cache_buster_url = append_cache_buster(url);
+                    log::trace!(
+                        target: "blazeweb::engine",
+                        "[{url}] same-doc + per-call init scripts: routing as full-nav via {cache_buster_url}"
+                    );
+                    let nav_params = match referrer.as_ref() {
+                        Some(r) => NavigateParams::builder()
+                            .url(cache_buster_url.clone())
+                            .referrer(r.clone())
+                            .referrer_policy(ReferrerPolicy::UnsafeUrl)
+                            .build()
+                            .map_err(|e| BlazeError::Cdp(format!("navigate params: {e}")))?,
+                        None => NavigateParams::new(cache_buster_url.clone()),
+                    };
+                    page.goto(nav_params).await?;
+                    let t_nav_ack = t_goto.elapsed();
+                    log::trace!(target: "blazeweb::engine", "[{url}] cache-busted goto ack in {t_nav_ack:?}");
+                    false
+                } else {
+                    log::trace!(
+                        target: "blazeweb::engine",
+                        "[{url}] same-doc nav detected (prev={prev}); using Runtime.evaluate"
+                    );
+                    let escaped = serde_json::to_string(url).unwrap_or_else(|_| "''".to_string());
+                    page.evaluate(format!("location.href = {escaped};").as_str())
+                        .await?;
+                    let t_nav_ack = t_goto.elapsed();
+                    log::trace!(target: "blazeweb::engine", "[{url}] evaluate-nav ack in {t_nav_ack:?}");
+                    true
+                }
             }
             _ => {
                 log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");

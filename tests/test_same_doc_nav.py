@@ -71,3 +71,52 @@ def test_dcl_mode_same_doc_nav(httpserver: HTTPServer) -> None:
         r2 = c.fetch(base + "#abc")
     assert r1.status_code == 200
     assert r2.status_code == 200
+
+
+def test_same_doc_with_init_scripts_forces_full_nav(httpserver: HTTPServer) -> None:
+    """Per-call init scripts only fire on new-document navs in chromium.
+    When a fetch URL would be same-doc but per_call.scripts is non-empty,
+    blazeweb appends a cache-buster to force a full nav so the init
+    scripts run as the user expects.
+    """
+    httpserver.expect_request("/").respond_with_data(
+        "<html><body><div id='out'></div>"
+        "<script>document.getElementById('out').textContent = "
+        "(window.__hooked === true ? 'hooked' : 'not_hooked');</script>"
+        "</body></html>",
+        content_type="text/html",
+    )
+    base = httpserver.url_for("/")
+    init_script = "window.__hooked = true;"
+
+    with blazeweb.Client(concurrency=1) as c:
+        # Fetch 1: full nav, no init script.
+        r1 = c.fetch(base)
+        assert r1.status_code == 200
+        assert "not_hooked" in r1, "sanity: page sees __hooked=undefined"
+
+        # Fetch 2: would be same-doc (`base#x` vs `base`) but with an init
+        # script. blazeweb must force a full nav so the init_script fires.
+        r2 = c.fetch(base + "#x", scripts=[init_script])
+        assert r2.status_code == 200
+        assert "hooked" in r2, (
+            f"init_script didn't run on same-doc + init_scripts case; html: {r2[:300]!r}"
+        )
+        # final_url contains the cache-buster, marking the full-nav route.
+        assert "__blazeweb_t=" in r2.final_url, (
+            f"expected cache-buster in final_url: {r2.final_url!r}"
+        )
+
+
+def test_same_doc_without_init_scripts_uses_evaluate_path(httpserver: HTTPServer) -> None:
+    """The complementary case: no per-call init scripts, blazeweb takes the
+    fast evaluate-based same-doc path; no cache-buster appears."""
+    base = _serve_simple(httpserver)
+    with blazeweb.Client(concurrency=1) as c:
+        r1 = c.fetch(base)
+        r2 = c.fetch(base + "#abc")
+    assert r2.status_code == 200
+    assert "__blazeweb_t" not in r2.final_url, (
+        f"unexpected cache-buster in final_url: {r2.final_url!r}"
+    )
+    assert r2.final_url.endswith("#abc")
