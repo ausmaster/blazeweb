@@ -17,8 +17,8 @@ use chromiumoxide::cdp::browser_protocol::network::{
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     AddScriptToEvaluateOnNewDocumentParams, CaptureScreenshotFormat, CaptureScreenshotParams,
-    EventDomContentEventFired, EventLoadEventFired, RemoveScriptToEvaluateOnNewDocumentParams,
-    ScriptIdentifier,
+    EventDomContentEventFired, EventLoadEventFired, EventNavigatedWithinDocument, NavigateParams,
+    ReferrerPolicy, RemoveScriptToEvaluateOnNewDocumentParams, ScriptIdentifier,
 };
 use futures::StreamExt;
 
@@ -29,6 +29,63 @@ use crate::config::{
 use crate::error::{BlazeError, Result};
 use crate::pool::{PageGuard, block_patterns};
 use crate::result::ConsoleMessageRs;
+
+/// True when ``target`` differs from ``prev`` only by URL fragment (the part
+/// after `#`) AND the fragment actually differs. chromium treats such
+/// transitions as same-document navigations: no new HTTP request, no `load`
+/// event, no `domContentLoaded` event — only `Page.navigatedWithinDocument`
+/// fires.
+///
+/// Identical URLs (same path/query, same fragment or both fragmentless) are
+/// NOT same-doc — chromium does a full reload, the init scripts re-fire, and
+/// the load event fires; we want the normal goto path.
+///
+/// Used by `capture_page` to route hash-only navs through `Runtime.evaluate`
+/// (which goes through a separate CDP command channel) rather than
+/// `Page.navigate` (which empirically hangs in chromiumoxide for hash-only
+/// URLs after a previous nav on the same pool tab).
+fn is_same_document_change(prev: &str, target: &str) -> bool {
+    fn split(s: &str) -> (&str, Option<&str>) {
+        match s.split_once('#') {
+            Some((p, h)) => (p, Some(h)),
+            None => (s, None),
+        }
+    }
+    let (prev_prefix, prev_hash) = split(prev);
+    let (target_prefix, target_hash) = split(target);
+    prev_prefix == target_prefix && prev_hash != target_hash
+}
+
+/// Append a unique nanosecond cache-buster query parameter to ``url``,
+/// preserving any existing fragment. Used to force chromium to treat a
+/// same-document URL as a new document (so per-call init scripts fire).
+///
+/// data: URLs and other URLs without a query slot fall through unchanged
+/// (best-effort — caller will get the chromiumoxide hang for those).
+fn append_cache_buster(url: &str) -> String {
+    let nano = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let suffix = format!("__blazeweb_t={nano}");
+    let (path_query, hash) = match url.split_once('#') {
+        Some((p, h)) => (p, Some(h)),
+        None => (url, None),
+    };
+    // data: URLs / opaque schemes don't have a useful query slot; bail.
+    if path_query.starts_with("data:") || !path_query.contains("://") {
+        return url.to_string();
+    }
+    let with_q = if path_query.contains('?') {
+        format!("{path_query}&{suffix}")
+    } else {
+        format!("{path_query}?{suffix}")
+    };
+    match hash {
+        Some(h) => format!("{with_q}#{h}"),
+        None => with_q,
+    }
+}
 
 /// Apply an action's failure policy. Returns ``Ok(true)`` if the action
 /// succeeded (caller should run any post-action wait), ``Ok(false)`` if it
@@ -82,6 +139,10 @@ pub struct CaptureOutput {
     pub final_url: String,
     pub status_code: u16,
     pub elapsed_s: f64,
+    /// JSON-string per ``FetchConfig.post_load_scripts`` entry, ``None`` for
+    /// ``undefined`` / non-serializable JS returns. Empty when no
+    /// ``post_load_scripts`` were configured.
+    pub post_load_results: Vec<Option<String>>,
 }
 
 /// Navigate an already-configured pooled page to `url` and capture.
@@ -100,6 +161,18 @@ pub async fn capture_page(
         .timeout_ms
         .or(per_shot.timeout_ms)
         .unwrap_or(base.timeout.navigation_ms);
+
+    // Hoist wait_until computation before the fut block so the timeout
+    // error path (outside the fut) can name which lifecycle event was
+    // being awaited.
+    let wait_until = per_call
+        .wait_until
+        .or(per_shot.wait_until)
+        .unwrap_or(base.wait_until);
+    let wait_until_label: &'static str = match wait_until {
+        WaitUntil::Load => "load",
+        WaitUntil::DomContentLoaded => "domcontentloaded",
+    };
 
     let page = guard.page();
 
@@ -156,21 +229,40 @@ pub async fn capture_page(
             .await?;
         }
 
-        // Per-call header merge — only if there ARE per-call / per-shot extras.
-        if !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty() {
+        // Per-call header merge — only if there ARE per-call / per-shot extras
+        // OR a base Referer that needs lifting out.
+        let mut headers_map = base.network.extra_headers.clone();
+        for (k, v) in &per_call.extra_headers {
+            headers_map.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &per_shot.extra_headers {
+            headers_map.insert(k.clone(), v.clone());
+        }
+        // Lift `Referer` (case-insensitive) out of the merged headers map.
+        // Setting Referer via Network.setExtraHTTPHeaders is rejected by
+        // chromium with ERR_BLOCKED_BY_CLIENT for cross-origin values (W3C
+        // Referrer Policy enforcement at the URL loader). The supported
+        // path is `Page.navigate` with the `referrer` parameter, applied
+        // below.
+        let mut referrer: Option<String> = None;
+        let referer_keys: Vec<String> = headers_map
+            .keys()
+            .filter(|k| k.eq_ignore_ascii_case("referer"))
+            .cloned()
+            .collect();
+        for k in referer_keys {
+            referrer = headers_map.remove(&k);
+        }
+        let has_per_fetch_extras =
+            !per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty();
+        if has_per_fetch_extras || referrer.is_some() {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] merging headers (per_call={}, per_shot={})",
+                "[{url}] merging headers (per_call={}, per_shot={}, referrer={})",
                 per_call.extra_headers.len(),
-                per_shot.extra_headers.len()
+                per_shot.extra_headers.len(),
+                referrer.is_some()
             );
-            let mut headers_map = base.network.extra_headers.clone();
-            for (k, v) in &per_call.extra_headers {
-                headers_map.insert(k.clone(), v.clone());
-            }
-            for (k, v) in &per_shot.extra_headers {
-                headers_map.insert(k.clone(), v.clone());
-            }
             let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(
                 serde_json::to_value(&headers_map)
                     .map_err(|e| BlazeError::Internal(e.to_string()))?,
@@ -182,10 +274,6 @@ pub async fn capture_page(
         // Subscribe BEFORE goto (race-free). goto returns on navigate ack
         // (~5-10ms), well before any lifecycle event — DO NOT race it against
         // these streams or the goto arm always wins.
-        let wait_until = per_call
-            .wait_until
-            .or(per_shot.wait_until)
-            .unwrap_or(base.wait_until);
         let t_goto = Instant::now();
         log::trace!(target: "blazeweb::engine", "[{url}] subscribe lifecycle streams");
         let mut dcl_stream = page
@@ -196,27 +284,136 @@ pub async fn capture_page(
             .event_listener::<EventLoadEventFired>()
             .await
             .map_err(BlazeError::from)?;
+        // Same-document navs (hash-only / pushState) fire neither DCL nor
+        // load; they fire `Page.navigatedWithinDocument` instead. Subscribe
+        // here so we don't hang on a hash-only fetch from a previously-loaded
+        // pool tab.
+        //
+        // Empirically, on chrome-headless-shell, `Page.navigate` for a URL
+        // that differs only by hash from the pool tab's current URL never
+        // returns through chromiumoxide's CommandFuture path — likely the
+        // chromiumoxide handler's pending-navigations queue blocks waiting
+        // for a `load` event that chromium will never fire for same-doc
+        // navs. We race `goto` against `navigatedWithinDocument`: if the
+        // event fires before goto returns, the navigation is same-doc and
+        // already complete; we drop the pending goto future and skip the
+        // lifecycle wait.
+        let mut within_doc_stream = page
+            .event_listener::<EventNavigatedWithinDocument>()
+            .await
+            .map_err(BlazeError::from)?;
 
-        log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
-        page.goto(url).await?;
-        let t_nav_ack = t_goto.elapsed();
-        log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
-
-        match wait_until {
-            WaitUntil::DomContentLoaded => {
-                // DCL preferred; load covers tiny docs that never fire DCL.
-                tokio::select! {
-                    _ = dcl_stream.next() => {
-                        log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
-                    }
-                    _ = load_stream.next() => {
-                        log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
-                    }
+        // Detect same-document navigation by URL comparison against the pool
+        // tab's tracked current URL. Same-doc navs need a different code path
+        // because chromiumoxide's `Page.navigate` command future never
+        // resolves on a pooled tab whose previous fetch was a successful
+        // navigation: chromium itself responds to the hash-only Page.navigate
+        // immediately (verified via raw CDP probe — under 1ms, with correct
+        // `frameId` + omitted `loaderId`), but the response never reaches
+        // chromiumoxide's awaiting `CommandFuture`. The bug is in
+        // chromiumoxide's command-response routing on the long-lived pool
+        // session, NOT in chromium.
+        //
+        // For hash-only URLs without per-call init scripts: route through
+        // `Runtime.evaluate("location.href = url")` — separate CDP command
+        // channel that isn't affected by the routing bug. Triggers
+        // `navigatedWithinDocument` natively; updates `current_url`.
+        //
+        // For hash-only URLs WITH per-call init scripts: chromium only fires
+        // `addScriptToEvaluateOnNewDocument` scripts on new-document navs,
+        // so a same-doc shortcut would silently skip the user's
+        // init_scripts. Append a nanosecond cache-buster to the URL's
+        // query so chromium does a full nav (fresh document) and the
+        // init_scripts fire as expected. The cache-buster is visible in
+        // `r.final_url` for full transparency.
+        let cache_buster_url: String;
+        let needs_init_scripts = !per_call.scripts.is_empty();
+        let same_doc_nav = match guard.current_url() {
+            Some(prev) if is_same_document_change(&prev, url) => {
+                if needs_init_scripts {
+                    cache_buster_url = append_cache_buster(url);
+                    log::trace!(
+                        target: "blazeweb::engine",
+                        "[{url}] same-doc + per-call init scripts: routing as full-nav via {cache_buster_url}"
+                    );
+                    let nav_params = match referrer.as_ref() {
+                        Some(r) => NavigateParams::builder()
+                            .url(cache_buster_url.clone())
+                            .referrer(r.clone())
+                            .referrer_policy(ReferrerPolicy::UnsafeUrl)
+                            .build()
+                            .map_err(|e| BlazeError::Cdp(format!("navigate params: {e}")))?,
+                        None => NavigateParams::new(cache_buster_url.clone()),
+                    };
+                    page.goto(nav_params).await?;
+                    let t_nav_ack = t_goto.elapsed();
+                    log::trace!(target: "blazeweb::engine", "[{url}] cache-busted goto ack in {t_nav_ack:?}");
+                    false
+                } else {
+                    log::trace!(
+                        target: "blazeweb::engine",
+                        "[{url}] same-doc nav detected (prev={prev}); using Runtime.evaluate"
+                    );
+                    let escaped = serde_json::to_string(url).unwrap_or_else(|_| "''".to_string());
+                    page.evaluate(format!("location.href = {escaped};").as_str())
+                        .await?;
+                    let t_nav_ack = t_goto.elapsed();
+                    log::trace!(target: "blazeweb::engine", "[{url}] evaluate-nav ack in {t_nav_ack:?}");
+                    true
                 }
             }
-            WaitUntil::Load => {
-                load_stream.next().await;
-                log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+            _ => {
+                log::trace!(target: "blazeweb::engine", "[{url}] navigate (wait_until={wait_until:?})");
+                let nav_params = match referrer.as_ref() {
+                    // ReferrerPolicy::UnsafeUrl tells chromium to pass the
+                    // full referrer URL through unchanged. The default policy
+                    // (`strict-origin-when-cross-origin`) strips path and
+                    // query for cross-origin requests, which would mangle
+                    // testing-tool use cases that need the exact Referer
+                    // they specified.
+                    Some(r) => NavigateParams::builder()
+                        .url(url.to_string())
+                        .referrer(r.clone())
+                        .referrer_policy(ReferrerPolicy::UnsafeUrl)
+                        .build()
+                        .map_err(|e| BlazeError::Cdp(format!("navigate params: {e}")))?,
+                    None => NavigateParams::new(url.to_string()),
+                };
+                page.goto(nav_params).await?;
+                let t_nav_ack = t_goto.elapsed();
+                log::trace!(target: "blazeweb::engine", "[{url}] navigate ack in {t_nav_ack:?}");
+                false
+            }
+        };
+
+        if !same_doc_nav {
+            match wait_until {
+                WaitUntil::DomContentLoaded => {
+                    // DCL preferred; load covers tiny docs that never fire DCL;
+                    // navigatedWithinDocument covers same-doc navs that race
+                    // goto's response (rare but possible on full nav too).
+                    tokio::select! {
+                        _ = dcl_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] DCL fired");
+                        }
+                        _ = load_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] load fired (no DCL)");
+                        }
+                        _ = within_doc_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] navigatedWithinDocument fired");
+                        }
+                    }
+                }
+                WaitUntil::Load => {
+                    tokio::select! {
+                        _ = load_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] load fired");
+                        }
+                        _ = within_doc_stream.next() => {
+                            log::trace!(target: "blazeweb::engine", "[{url}] navigatedWithinDocument fired");
+                        }
+                    }
+                }
             }
         }
         log::trace!(
@@ -276,13 +473,72 @@ pub async fn capture_page(
         // page via Runtime.evaluate. Single CDP roundtrip per script. The
         // primary primitive for "do JS work on the loaded page" use cases
         // (see CLAUDE.md "Public Python surface").
-        for src in &per_call.post_load_scripts {
+        //
+        // Capture each script's JS return value. chromiumoxide forces
+        // `return_by_value=true` on the underlying CDP `Runtime.evaluate`,
+        // so primitives + plain objects + arrays come back JSON-decoded
+        // inside `RemoteObject.value`.
+        //
+        // Function returns: chromiumoxide preserves
+        // `RemoteObject.type=Function` even with returnByValue=true; we
+        // surface those as `None` rather than the empty dict chromium
+        // would otherwise produce.
+        //
+        // Sharp edge: DOM nodes / Window serialize to `{}` under
+        // returnByValue=true (chromium can't enumerate them). Consumers
+        // who need to distinguish should filter in their own script —
+        // e.g. ``"JSON.stringify(x) === '{}' ? null : x"``. Wrapping all
+        // scripts in a JS trampoline that detects DOM nodes up front
+        // would break multi-statement / `throw` / `try-catch` sources
+        // that aren't valid in an `await (EXPR)` slot, so the engine
+        // intentionally does not.
+        let mut post_load_results: Vec<Option<String>> =
+            Vec::with_capacity(per_call.post_load_scripts.len());
+        for (i, src) in per_call.post_load_scripts.iter().enumerate() {
             log::trace!(
                 target: "blazeweb::engine",
-                "[{url}] post_load_script ({} chars)",
+                "[{url}] post_load_script[{i}] ({} chars)",
                 src.len()
             );
-            page.evaluate(src.as_str()).await?;
+            let eval_result =
+                page.evaluate(src.as_str())
+                    .await
+                    .map_err(|e| BlazeError::PostLoadScript {
+                        index: i,
+                        source: Box::new(BlazeError::from(e)),
+                    })?;
+            let is_function = matches!(
+                eval_result.object().r#type,
+                chromiumoxide::cdp::js_protocol::runtime::RemoteObjectType::Function
+            );
+            let serialized = if is_function {
+                None
+            } else {
+                eval_result.value().map(|v| v.to_string())
+            };
+            if serialized.is_none() {
+                log::debug!(
+                    target: "blazeweb::engine",
+                    "[{url}] post_load_script[{i}] returned non-serializable / undefined / function"
+                );
+            }
+            post_load_results.push(serialized);
+        }
+
+        // Optional settle window AFTER post_load_scripts and BEFORE actions /
+        // capture. Distinct from `wait_after_ms` (which fires before
+        // post_load_scripts). Lets scripts that schedule async work
+        // (setTimeout, fetch, deferred DOM mutations) finish before capture.
+        let wait_after_post_load_ms = per_call
+            .wait_after_post_load_ms
+            .or(per_shot.wait_after_post_load_ms)
+            .unwrap_or(base.wait_after_post_load_ms);
+        if wait_after_post_load_ms > 0 {
+            log::trace!(
+                target: "blazeweb::engine",
+                "[{url}] post-load settle {wait_after_post_load_ms}ms"
+            );
+            tokio::time::sleep(Duration::from_millis(wait_after_post_load_ms)).await;
         }
 
         // Run post-load actions BEFORE HTML capture so the captured DOM
@@ -366,8 +622,13 @@ pub async fn capture_page(
             .flatten()
             .unwrap_or_else(|| url.to_string());
         // Status from the pool's Network.responseReceived listener — captured
-        // on response headers, independent of wait_until choice.
-        let status_code: u16 = guard.main_status().unwrap_or(0);
+        // on response headers, independent of wait_until choice. Same-document
+        // navs don't trigger a new HTTP response, so fall back to the prior
+        // fetch's status (the document hasn't actually changed).
+        let status_code: u16 = guard
+            .main_status()
+            .or_else(|| same_doc_nav.then(|| guard.prev_main_status()).flatten())
+            .unwrap_or(0);
 
         let mut out = CaptureOutput {
             html: None,
@@ -376,6 +637,7 @@ pub async fn capture_page(
             final_url,
             status_code,
             elapsed_s: 0.0,
+            post_load_results,
         };
 
         if matches!(mode, CaptureMode::Html | CaptureMode::Both) {
@@ -450,6 +712,19 @@ pub async fn capture_page(
             .await;
     }
 
+    // Per-call extra-headers cleanup — restore the Client-level baseline so
+    // per-call overrides don't leak to subsequent fetches on this pooled tab.
+    // Mirrors the block_urls cleanup pattern; same swallow-error semantics
+    // (cleanup failure must not mask the original cause). Triggers on either
+    // per_call/per_shot extras OR a base Referer that we lifted out — both
+    // paths called `setExtraHTTPHeaders` with a modified header set.
+    if (!per_call.extra_headers.is_empty() || !per_shot.extra_headers.is_empty())
+        && let Ok(json) = serde_json::to_value(&base.network.extra_headers)
+    {
+        let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(json);
+        let _ = page.execute(SetExtraHttpHeadersParams::new(headers)).await;
+    }
+
     // Per-call navigation-block cleanup — disable the Fetch domain so the
     // listener task's stream ends and any future fetches on this tab aren't
     // intercepted. CDP auto-continues paused requests on disable.
@@ -469,7 +744,11 @@ pub async fn capture_page(
 
     let mut result = fut_result.map_err(|_| {
         log::warn!(target: "blazeweb::engine", "[{url}] nav timeout after {timeout_ms}ms");
-        BlazeError::NavigationTimeout(timeout_ms)
+        BlazeError::NavigationTimeout {
+            timeout_ms,
+            url: url.to_string(),
+            wait_until: wait_until_label,
+        }
     })??;
 
     result.elapsed_s = (t0.elapsed().as_secs_f64() * 10000.0).round() / 10000.0;

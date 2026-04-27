@@ -42,6 +42,12 @@ pub struct RawRenderOutput {
     pub status_code: u16,
     #[pyo3(get)]
     pub elapsed_s: f64,
+    /// One JSON-string entry per ``FetchConfig.post_load_scripts`` entry, in
+    /// input order. ``None`` when the script returned ``undefined`` or a
+    /// non-JSON-serializable value (DOM node, function). Python-side
+    /// (`_make_render_result`) ``json.loads`` each entry into Python natives.
+    #[pyo3(get)]
+    pub post_load_results: Vec<Option<String>>,
 }
 
 #[pymethods]
@@ -69,6 +75,9 @@ pub struct RawFetchOutput {
     pub status_code: u16,
     #[pyo3(get)]
     pub elapsed_s: f64,
+    /// See ``RawRenderOutput.post_load_results``.
+    #[pyo3(get)]
+    pub post_load_results: Vec<Option<String>>,
 }
 
 #[pymethods]

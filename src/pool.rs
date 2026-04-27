@@ -18,7 +18,9 @@ use chromiumoxide::cdp::browser_protocol::network::{
     BlockPattern, SetBlockedUrLsParams, SetCacheDisabledParams, SetExtraHttpHeadersParams,
     SetUserAgentOverrideParams,
 };
-use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+use chromiumoxide::cdp::browser_protocol::page::{
+    AddScriptToEvaluateOnNewDocumentParams, EventFrameNavigated, EventNavigatedWithinDocument,
+};
 use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 use parking_lot::Mutex;
@@ -51,6 +53,17 @@ pub struct PooledPage {
     /// Latest main-doc HTTP status from Network.responseReceived — populated on
     /// response headers, well before DOMContentLoaded.
     pub main_status: Arc<Mutex<Option<u16>>>,
+    /// Status from the most recently completed fetch on this tab — preserved
+    /// across acquire so same-document navs (no new HTTP response) can return
+    /// the previous document's status code.
+    pub prev_main_status: Arc<Mutex<Option<u16>>>,
+    /// Latest URL the tab is at — updated by long-lived listeners on
+    /// `Page.frameNavigated` (full nav) and `Page.navigatedWithinDocument`
+    /// (same-doc nav). Used by `engine::capture_page` to detect when a
+    /// requested fetch is a same-document navigation, which needs a different
+    /// code path than `Page.navigate` (chromiumoxide's command future hangs
+    /// for hash-only URLs after a previous nav on the same tab).
+    pub current_url: Arc<Mutex<Option<String>>>,
 }
 
 /// Pool sized to the Client's `concurrency`. `acquire()` returns page + permit
@@ -102,7 +115,19 @@ impl PagePool {
             .pop()
             .expect("semaphore permitted but pool is empty");
         pooled.console_messages.lock().clear();
-        *pooled.main_status.lock() = None;
+        // Snapshot previous status before clearing — same-doc navs (no new
+        // HTTP response) propagate the prior document's status code. Only
+        // shift into prev_main_status if main_status was actually populated
+        // by the prior fetch; otherwise keep the existing prev so chains of
+        // same-doc navs (each leaving main_status unset) all see the
+        // document's original status.
+        {
+            let mut main = pooled.main_status.lock();
+            if let Some(s) = *main {
+                *pooled.prev_main_status.lock() = Some(s);
+            }
+            *main = None;
+        }
         log::trace!(
             target: "blazeweb::pool",
             "acquired page (waited {:?}, pool available={})",
@@ -160,6 +185,30 @@ impl PageGuard {
             .expect("guard drained")
             .main_status
             .lock()
+    }
+
+    /// Status from the most recently completed prior fetch on this tab. Used
+    /// as a fallback for same-document navs which don't trigger a new
+    /// `Network.responseReceived` event.
+    pub fn prev_main_status(&self) -> Option<u16> {
+        *self
+            .page
+            .as_ref()
+            .expect("guard drained")
+            .prev_main_status
+            .lock()
+    }
+
+    /// Tab's currently-loaded URL, tracked via long-lived listeners on
+    /// `Page.frameNavigated` and `Page.navigatedWithinDocument`. None until
+    /// the first navigation completes.
+    pub fn current_url(&self) -> Option<String> {
+        self.page
+            .as_ref()
+            .expect("guard drained")
+            .current_url
+            .lock()
+            .clone()
     }
 }
 
@@ -295,6 +344,8 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
     // these listeners.
     let console_messages: Arc<Mutex<Vec<ConsoleMessageRs>>> = Arc::new(Mutex::new(Vec::new()));
     let main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+    let prev_main_status: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+    let current_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let level = base.capture_console_level;
     {
         use chromiumoxide::cdp::browser_protocol::network::{EventResponseReceived, ResourceType};
@@ -408,6 +459,35 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
             }
         });
 
+        // Page.frameNavigated — fires on every cross-document navigation
+        // (full nav). Updates current_url so we can detect when an upcoming
+        // fetch is a same-document navigation.
+        let url_cl_full = current_url.clone();
+        let mut frame_nav_stream = page
+            .event_listener::<EventFrameNavigated>()
+            .await
+            .map_err(BlazeError::from)?;
+        tokio::spawn(async move {
+            while let Some(evt) = frame_nav_stream.next().await {
+                if evt.frame.parent_id.is_none() {
+                    *url_cl_full.lock() = Some(evt.frame.url.clone());
+                }
+            }
+        });
+
+        // Page.navigatedWithinDocument — fires on same-document navigation
+        // (hash change, history API). Keeps current_url in sync.
+        let url_cl_same = current_url.clone();
+        let mut within_doc_stream = page
+            .event_listener::<EventNavigatedWithinDocument>()
+            .await
+            .map_err(BlazeError::from)?;
+        tokio::spawn(async move {
+            while let Some(evt) = within_doc_stream.next().await {
+                *url_cl_same.lock() = Some(evt.url.clone());
+            }
+        });
+
         // Page.javascriptDialogOpening — auto-dismiss native dialogs
         // (alert/confirm/prompt/beforeunload). Without this, any page
         // that calls these blocks the lifecycle event waiting for a UI
@@ -435,6 +515,8 @@ async fn create_pooled_page(browser: &Browser, base: &ClientConfigRs) -> Result<
         page,
         console_messages,
         main_status,
+        prev_main_status,
+        current_url,
     })
 }
 
